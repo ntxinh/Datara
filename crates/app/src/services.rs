@@ -8,8 +8,8 @@ use std::sync::Arc;
 use datara_config::{AppConfig, AppPaths};
 use datara_database::DatabaseService;
 use datara_domain::{
-    AuthenticationMode, ConnectionId, ConnectionProfile, Credentials, EncryptionMode,
-    Result as DomainResult, SecretReference,
+    AuthenticationMode, ConnectionId, ConnectionProfile, Credentials, DomainError, EncryptionMode,
+    Result as DomainResult, SecretReference, TableKind,
 };
 use datara_driver_mssql::MssqlDriver;
 use datara_secrets::SecretStore;
@@ -18,6 +18,7 @@ use secrecy::SecretString;
 use tokio::runtime::Runtime;
 
 use crate::bridge::{AppEvent, UiHandle};
+use crate::schema_tree::{FolderKind, NodeKind, TreeNode};
 use crate::ConnForm;
 
 /// Multi-thread runtime for all backend I/O. Slint owns the main thread.
@@ -182,19 +183,108 @@ impl Backend {
         Ok((profile, creds))
     }
 
-    /// Sidebar Connect: open (or reuse) a pooled session for `id`.
-    pub async fn connect_profile(&self, id: i32, ui: UiHandle) {
-        let id = ConnectionId(i64::from(id));
-        match self.service.session(id).await {
-            Ok(_) => ui.dispatch(AppEvent::Connected(id)),
-            Err(e) => ui.dispatch(AppEvent::ConnectFailed {
-                id,
-                message: e.to_string(),
-            }),
+    /// `toggle-node` on an unexpanded row: fetch its children by kind and
+    /// dispatch them back for `SchemaTree::replace_children`.
+    pub async fn expand_node(&self, node: TreeNode, ui: UiHandle) {
+        let result = self
+            .node_children(&node)
+            .await
+            .map_err(|e| format!("{}: {e}", node.label));
+        ui.dispatch(AppEvent::TreeChildren {
+            parent_id: node.id,
+            result,
+        });
+    }
+
+    /// Children for one expanded row. Lazy: nothing here runs until expand.
+    async fn node_children(&self, node: &TreeNode) -> DomainResult<Vec<TreeNode>> {
+        let conn_id = || {
+            node.connection_id.ok_or_else(|| DomainError::Driver {
+                message: "tree node missing connection_id".into(),
+            })
+        };
+        match node.kind {
+            NodeKind::Connection => {
+                let dbs = self.service.list_databases(conn_id()?).await?;
+                Ok(dbs
+                    .into_iter()
+                    .map(|d| TreeNode {
+                        connection_id: node.connection_id,
+                        database: Some(d.name.clone()),
+                        ..TreeNode::new(NodeKind::Database, d.name)
+                    })
+                    .collect())
+            }
+            NodeKind::Database => {
+                let at = |kind| TreeNode {
+                    connection_id: node.connection_id,
+                    database: node.database.clone(),
+                    ..TreeNode::new(
+                        NodeKind::Folder(kind),
+                        match kind {
+                            FolderKind::Tables => "Tables",
+                            FolderKind::Views => "Views",
+                        },
+                    )
+                };
+                Ok(vec![at(FolderKind::Tables), at(FolderKind::Views)])
+            }
+            NodeKind::Folder(kind) => {
+                let id = conn_id()?;
+                let db = node.database.as_deref().unwrap_or_default();
+                // The flat tree has no schema level: one list_tables call
+                // per schema, folded into schema.name rows.
+                // ponytail: N+1 per schema — a wildcard LIST_TABLES query
+                // collapses this if schema counts ever hurt.
+                let schemas = self.service.list_schemas(&id, db).await?;
+                let want = match kind {
+                    FolderKind::Tables => TableKind::Base,
+                    FolderKind::Views => TableKind::View,
+                };
+                let node_kind = match kind {
+                    FolderKind::Tables => NodeKind::Table,
+                    FolderKind::Views => NodeKind::View,
+                };
+                let mut out = Vec::new();
+                for s in schemas {
+                    for t in self.service.list_tables(&id, db, &s.name).await? {
+                        if t.kind != want {
+                            continue;
+                        }
+                        out.push(TreeNode {
+                            connection_id: node.connection_id,
+                            database: node.database.clone(),
+                            schema: Some(t.schema.clone()),
+                            table: Some(t.name.clone()),
+                            ..TreeNode::new(node_kind, format!("{}.{}", t.schema, t.name))
+                        });
+                    }
+                }
+                Ok(out)
+            }
+            NodeKind::Table | NodeKind::View => {
+                let desc = self
+                    .service
+                    .describe_table(
+                        &conn_id()?,
+                        node.database.as_deref().unwrap_or_default(),
+                        node.schema.as_deref().unwrap_or_default(),
+                        node.table.as_deref().unwrap_or_default(),
+                    )
+                    .await?;
+                Ok(desc
+                    .columns
+                    .into_iter()
+                    .map(|c| {
+                        TreeNode::new(NodeKind::Column, format!("{}: {}", c.name, c.data_type))
+                    })
+                    .collect())
+            }
+            // Leaves never reach expand; unreachable via `expandable`.
+            NodeKind::Column | NodeKind::Loading => Ok(vec![]),
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     //! End-to-end smoke for the save flow: profile row + keyring item must
@@ -257,5 +347,69 @@ mod tests {
             std::fs::remove_dir_all(&tmp).ok();
         }
         println!("smoke data dir: {}", tmp.display());
+    }
+
+    /// Exercises the real fetch chain end-to-end against a live server:
+    /// connection → databases → Tables/Views folders → `schema.name` rows →
+    /// columns. Seed `/tmp/datara-smoke-data/app.db` with a `smoke-mssql`
+    /// profile (127.0.0.1:11433, sa) and its `mssql/<id>/password` secret.
+    #[test]
+    #[ignore = "needs a live MSSQL on 127.0.0.1:11433 and a seeded 'smoke-mssql' profile"]
+    fn smoke_node_children_fetches_live_schema() {
+        let data = std::env::temp_dir().join("datara-smoke-data");
+        std::env::set_var("DATARA_DATA_DIR", &data);
+        std::env::set_var(
+            "DATARA_CONFIG_DIR",
+            std::env::temp_dir().join("datara-smoke-config"),
+        );
+        std::env::set_var(
+            "DATARA_STATE_DIR",
+            std::env::temp_dir().join("datara-smoke-state"),
+        );
+
+        let svc = AppServices::init().expect("services init");
+        svc.runtime.block_on(async {
+            let conns = svc.backend.storage.connections().list().await.unwrap();
+            let conn = conns
+                .iter()
+                .find(|c| c.name == "smoke-mssql")
+                .expect("seed the smoke-mssql profile first")
+                .clone();
+            let mut node = TreeNode::new(NodeKind::Connection, conn.name.clone());
+            node.connection_id = Some(conn.id);
+
+            // Connection → databases.
+            let dbs = svc.backend.node_children(&node).await.unwrap();
+            assert!(dbs.iter().all(|d| d.kind == NodeKind::Database));
+            let master = dbs
+                .iter()
+                .find(|d| d.label == "master")
+                .expect("master database")
+                .clone();
+
+            // Database → Tables/Views folders.
+            let folders = svc.backend.node_children(&master).await.unwrap();
+            assert_eq!(
+                folders.iter().map(|f| f.label.as_str()).collect::<Vec<_>>(),
+                ["Tables", "Views"]
+            );
+
+            // Tables folder → schema.name rows across all schemas.
+            let tables = svc.backend.node_children(&folders[0]).await.unwrap();
+            assert!(tables.iter().all(|t| t.kind == NodeKind::Table));
+            assert!(tables.iter().all(|t| t.label.contains('.')));
+            // Views folder → only View-kind rows.
+            let views = svc.backend.node_children(&folders[1]).await.unwrap();
+            assert!(views.iter().all(|v| v.kind == NodeKind::View));
+
+            // First table → leaf columns.
+            if let Some(t) = tables.first() {
+                let cols = svc.backend.node_children(t).await.unwrap();
+                assert!(!cols.is_empty());
+                assert!(cols
+                    .iter()
+                    .all(|c| c.kind == NodeKind::Column && !c.has_children));
+            }
+        });
     }
 }

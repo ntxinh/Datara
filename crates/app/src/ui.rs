@@ -3,8 +3,12 @@
 //! the spawned futures), spawns a task, and reports through `UiHandle`.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
-use crate::bridge::UiHandle;
+use parking_lot::Mutex;
+
+use crate::bridge::{push_tree, UiHandle};
+use crate::schema_tree::SchemaTree;
 use crate::services::AppServices;
 use crate::{Bridge, MainWindow};
 use slint::ComponentHandle;
@@ -13,7 +17,8 @@ use slint::ComponentHandle;
 pub fn run(services: AppServices) -> anyhow::Result<()> {
     let window = MainWindow::new()?;
     tracing::debug!(theme = %services.config.appearance.theme, "loaded config");
-    let ui = UiHandle::new(&window);
+    let tree = Arc::new(Mutex::new(SchemaTree::default()));
+    let ui = UiHandle::new(&window, Arc::clone(&tree));
     let services = Rc::new(services);
 
     // Initial sidebar population.
@@ -53,11 +58,35 @@ pub fn run(services: AppServices) -> anyhow::Result<()> {
 
     {
         let services = Rc::clone(&services);
-        bridge.on_connect_profile(move |id| {
+        let ui = ui.clone();
+        let tree = Arc::clone(&tree);
+        let weak = window.as_weak();
+        bridge.on_toggle_node(move |id| {
             let backend = services.backend.clone();
             let ui = ui.clone();
+            let node = {
+                let Some(win) = weak.upgrade() else {
+                    return;
+                };
+                let bridge = win.global::<Bridge>();
+                let mut tree = tree.lock();
+                let Some(idx) = tree.find(id) else {
+                    return;
+                };
+                if tree.visible()[idx].expanded {
+                    tree.collapse(idx);
+                    push_tree(&bridge, &tree);
+                    return;
+                }
+                let Some(node) = tree.expandable(idx).cloned() else {
+                    return; // leaf or placeholder: nothing to fetch
+                };
+                tree.expand_placeholder(idx);
+                push_tree(&bridge, &tree);
+                node
+            };
             services.runtime.spawn(async move {
-                backend.connect_profile(id, ui).await;
+                backend.expand_node(node, ui).await;
             });
         });
     }

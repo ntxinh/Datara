@@ -1,4 +1,5 @@
 mod bridge;
+mod schema_tree;
 mod services;
 mod ui;
 

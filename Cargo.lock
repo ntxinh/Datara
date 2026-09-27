@@ -1310,6 +1310,7 @@ dependencies = [
  "datara-driver-mssql",
  "datara-secrets",
  "datara-storage",
+ "parking_lot",
  "secrecy",
  "slint",
  "slint-build",

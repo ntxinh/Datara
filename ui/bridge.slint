@@ -10,11 +10,17 @@ export struct ConnForm {
     trust-cert: bool,
 }
 
-/// Row shown in the sidebar.
-export struct ConnectionItem {
+
+/// One visible row of the schema tree (Task 3.1). `kind` is
+/// NodeKind::as_str: connection|database|folder-tables|folder-views|
+/// table|view|column|loading.
+export struct TreeNode {
     id: int,
-    name: string,
-    host: string,
+    depth: int,
+    kind: string,
+    label: string,
+    has-children: bool,
+    expanded: bool,
 }
 
 /// Slint ↔ Tokio bridge. Callbacks fire on the UI thread and spawn work on
@@ -23,8 +29,9 @@ export struct ConnectionItem {
 export global Bridge {
     callback new-connection(ConnForm);
     callback test-connection(ConnForm);
-    callback connect-profile(int);
-    in property<[ConnectionItem]> connections;
+    /// Expand (lazy-load) or collapse a tree row.
+    callback toggle-node(int);
+    in property<[TreeNode]> tree;
     in property<string> status;
     in property<string> test-result;
 }
