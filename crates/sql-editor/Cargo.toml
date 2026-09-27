@@ -7,3 +7,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+sqlparser.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true

@@ -1396,6 +1396,10 @@ dependencies = [
 [[package]]
 name = "datara-sql-editor"
 version = "0.1.0"
+dependencies = [
+ "rstest",
+ "sqlparser",
+]
 
 [[package]]
 name = "datara-storage"

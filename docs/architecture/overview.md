@@ -6,6 +6,7 @@ nothing project-internal; `datara-app` is the sole Slint consumer and the
 composition root. See `DESIGN.md` for the system diagram and crate graph.
 
 **Implemented:** workspace scaffold, `domain` types, `config`, `storage`,
-`database` traits, minimal `app` binary (GUI launch + `mcp-serve` stub).
-**Pending:** driver-mssql, secrets, sql-editor, data-grid, mcp-server bodies —
+`database` traits, `sql-editor` (statement splitting, highlighting,
+completions), minimal `app` binary (GUI launch + `mcp-serve` stub).
+**Pending:** driver-mssql, secrets, data-grid, mcp-server bodies —
 phases 2–7.
