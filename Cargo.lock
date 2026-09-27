@@ -1304,8 +1304,16 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "datara-config",
+ "datara-database",
+ "datara-domain",
+ "datara-driver-mssql",
+ "datara-secrets",
+ "datara-storage",
+ "secrecy",
  "slint",
  "slint-build",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]

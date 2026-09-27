@@ -1,4 +1,9 @@
 import { Theme } from "theme.slint";
+import { Sidebar } from "components/sidebar.slint";
+import { ConnDialog } from "dialogs/connection.slint";
+
+// Re-export so Rust's include_modules! sees the generated types.
+export { ConnForm, ConnectionItem, Bridge } from "bridge.slint";
 
 export component MainWindow inherits Window {
     title: "Datara";
@@ -6,17 +11,31 @@ export component MainWindow inherits Window {
     preferred-height: 700px;
     background: Theme.bg;
 
-    VerticalLayout {
-        padding: 16px;
-        Text {
-            text: "Datara";
-            font-size: 28px;
-            color: Theme.fg;
+    property<bool> show-dialog: false;
+
+    HorizontalLayout {
+        Sidebar {
+            new-connection-requested => {
+                root.show-dialog = true;
+            }
         }
-        Text {
-            text: "MSSQL client — foundation build";
-            color: Theme.fg;
-            opacity: 0.6;
+        Rectangle {
+            background: Theme.bg;
+            Text {
+                text: "Select a connection to begin";
+                color: Theme.fg;
+                opacity: 0.5;
+            }
+        }
+    }
+
+    // Modal overlay — Slint 1.18's fluent style has no Dialog widget, so a
+    // dimmed full-window overlay with a centered card plays that role.
+    if root.show-dialog: ConnDialog {
+        width: 100%;
+        height: 100%;
+        close-requested => {
+            root.show-dialog = false;
         }
     }
 }

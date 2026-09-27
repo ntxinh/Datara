@@ -1,3 +1,7 @@
+mod bridge;
+mod services;
+mod ui;
+
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
@@ -52,6 +56,7 @@ fn run_gui() -> anyhow::Result<()> {
     // and must match StartupWMClass in the .desktop file (Task 8.1).
     slint::set_xdg_app_id("datara")?;
 
-    MainWindow::new()?.run()?;
+    let services = services::AppServices::init()?;
+    ui::run(services)?;
     Ok(())
 }

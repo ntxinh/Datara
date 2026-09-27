@@ -13,6 +13,14 @@ clap.workspace = true
 slint.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+datara-config.workspace = true
+datara-database.workspace = true
+datara-domain.workspace = true
+datara-driver-mssql.workspace = true
+datara-secrets.workspace = true
+datara-storage.workspace = true
+secrecy.workspace = true
+tokio.workspace = true
 
 [build-dependencies]
 slint-build.workspace = true

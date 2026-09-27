@@ -1,0 +1,30 @@
+/// Form fields for a new connection (Task 2.4).
+export struct ConnForm {
+    name: string,
+    host: string,
+    port: int,
+    database: string,
+    username: string,
+    password: string,
+    encryption: string, // "disabled" | "preferred" | "required"
+    trust-cert: bool,
+}
+
+/// Row shown in the sidebar.
+export struct ConnectionItem {
+    id: int,
+    name: string,
+    host: string,
+}
+
+/// Slint ↔ Tokio bridge. Callbacks fire on the UI thread and spawn work on
+/// the Tokio runtime; `in` properties are pushed back via
+/// `invoke_from_event_loop` (see bridge.rs). Grows in later tasks.
+export global Bridge {
+    callback new-connection(ConnForm);
+    callback test-connection(ConnForm);
+    callback connect-profile(int);
+    in property<[ConnectionItem]> connections;
+    in property<string> status;
+    in property<string> test-result;
+}
