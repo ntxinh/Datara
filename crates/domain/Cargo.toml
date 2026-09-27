@@ -7,3 +7,11 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+jiff = { workspace = true, features = ["serde"] }
+secrecy.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
