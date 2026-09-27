@@ -7,3 +7,5 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+datara-domain.workspace = true
+async-trait.workspace = true
