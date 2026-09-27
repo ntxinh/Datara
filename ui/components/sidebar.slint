@@ -11,6 +11,12 @@ export component Sidebar inherits Rectangle {
     /// Toolbar button pressed — the window opens the connection dialog.
     callback new-connection-requested();
 
+    // Slint TouchArea has no double-click (1.18): a second click on the same
+    // table/view row within 400ms opens it. State lives on the root because
+    // delegates are rebuilt on every tree model swap.
+    property<duration> last-click-at: 0s;
+    property<int> last-click-id: 0;
+
     /// Single-character stand-ins until an icon font lands (Task 8.x polish).
     function kind-glyph(kind: string) -> string {
         if kind == "connection" { return "⬡"; }
@@ -85,7 +91,15 @@ export component Sidebar inherits Rectangle {
                 }
                 TouchArea {
                     clicked => {
-                        Bridge.toggle-node(node.id);
+                        if (node.kind == "table" || node.kind == "view") &&
+                           node.id == root.last-click-id &&
+                           animation-tick() - root.last-click-at < 400ms {
+                            Bridge.open-table(node.id);
+                        } else {
+                            Bridge.toggle-node(node.id);
+                        }
+                        root.last-click-id = node.id;
+                        root.last-click-at = animation-tick();
                     }
                 }
             }
@@ -96,6 +110,13 @@ export component Sidebar inherits Rectangle {
             background: Theme.border;
         }
 
+        // Empty string renders at zero height — no conditional needed.
+        Text {
+            text: Bridge.preview-sql;
+            color: Theme.accent;
+            font-size: 11px;
+            wrap: word-wrap;
+        }
         Text {
             text: Bridge.status;
             color: Theme.fg;

@@ -7,4 +7,4 @@ mod session;
 
 pub use convert::column_data_to_value;
 pub use driver::{map_tiberius_error, MssqlDriver};
-pub use session::MssqlSession;
+pub use session::{quote_ident, MssqlSession};

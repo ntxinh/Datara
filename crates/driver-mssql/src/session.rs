@@ -36,7 +36,9 @@ fn is_row_returning(query: &str) -> bool {
 }
 
 /// Quote `ident` as a `[` … `]` delimited identifier, escaping `]` as `]]`.
-fn quote_ident_inner(ident: &str) -> String {
+/// Free-standing so callers without a session handle (preview SQL) reuse the
+/// one rule.
+pub fn quote_ident(ident: &str) -> String {
     format!("[{}]", ident.replace(']', "]]"))
 }
 
@@ -103,7 +105,7 @@ impl MssqlSession {
     /// Issue `USE [database]` on `client`. Caller must hold the lock.
     async fn switch_db(client: &mut Client<Compat<TcpStream>>, database: &str) -> Result<()> {
         client
-            .execute(format!("USE {}", quote_ident_inner(database)), &[])
+            .execute(format!("USE {}", quote_ident(database)), &[])
             .await
             .map_err(map_tiberius_error)?;
         Ok(())
@@ -258,7 +260,7 @@ impl DatabaseSession for MssqlSession {
     }
 
     fn quote_ident(&self, ident: &str) -> String {
-        quote_ident_inner(ident)
+        quote_ident(ident)
     }
 }
 
@@ -268,9 +270,9 @@ mod tests {
 
     #[test]
     fn quote_ident_escapes_brackets() {
-        assert_eq!(quote_ident_inner("a"), "[a]");
-        assert_eq!(quote_ident_inner("a]b"), "[a]]b]");
-        assert_eq!(quote_ident_inner(""), "[]");
+        assert_eq!(quote_ident("a"), "[a]");
+        assert_eq!(quote_ident("a]b"), "[a]]b]");
+        assert_eq!(quote_ident(""), "[]");
     }
 
     #[test]

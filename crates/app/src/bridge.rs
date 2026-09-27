@@ -12,9 +12,10 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use crate::schema_tree::{SchemaTree, TreeNode};
+use crate::schema_tree::{NodeKind, SchemaTree, TreeNode};
+use crate::services::preview_sql;
 use crate::{Bridge, MainWindow, TreeNode as SlintTreeNode};
-use datara_domain::ConnectionProfile;
+use datara_domain::{ConnectionId, ConnectionProfile};
 use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 
 /// Events flowing core → UI.
@@ -29,6 +30,16 @@ pub enum AppEvent {
     TreeChildren {
         parent_id: i32,
         result: Result<Vec<TreeNode>, String>,
+    },
+    /// `open-table` resolved a row to its preview SELECT. Carries the full
+    /// nav payload so the Phase 5 grid can consume the same event verbatim.
+    PreviewSql {
+        conn_id: ConnectionId,
+        database: String,
+        schema: String,
+        table: String,
+        sql: String,
+        label: String,
     },
 }
 
@@ -90,6 +101,20 @@ fn apply(window: &MainWindow, tree: &Mutex<SchemaTree>, event: AppEvent) {
             }
             push_tree(&bridge, &tree);
         }
+        AppEvent::PreviewSql {
+            conn_id,
+            database,
+            schema,
+            table,
+            sql,
+            label,
+        } => {
+            // Nav payload is logged (not rendered) — Phase 5's grid consumes
+            // this event directly and re-derives the target from it.
+            tracing::debug!(?conn_id, database, schema, table, "open-table");
+            bridge.set_preview_sql(sql.into());
+            bridge.set_status(format!("Preview: {label}").into());
+        }
     }
 }
 
@@ -111,4 +136,88 @@ pub(crate) fn push_tree(bridge: &Bridge, tree: &SchemaTree) {
         })
         .collect();
     bridge.set_tree(ModelRc::new(VecModel::from(rows)));
+}
+
+/// Resolve `open-table(id)` to a [`AppEvent::PreviewSql`]: only Table/View
+/// rows with a complete nav payload produce one. Pure — the UI thread calls
+/// it inside `on_open_table`.
+pub(crate) fn open_table_event(tree: &SchemaTree, id: i32, limit: u32) -> Option<AppEvent> {
+    let node = tree.visible().get(tree.find(id)?)?;
+    if !matches!(node.kind, NodeKind::Table | NodeKind::View) {
+        return None;
+    }
+    let (conn_id, database, schema, table) = (
+        node.connection_id?,
+        node.database.clone()?,
+        node.schema.clone()?,
+        node.table.clone()?,
+    );
+    Some(AppEvent::PreviewSql {
+        conn_id,
+        database,
+        sql: preview_sql(&schema, &table, limit),
+        label: format!("{schema}.{table}"),
+        schema,
+        table,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `open-table` fires only for Table/View rows carrying the full nav
+    /// payload, and the generated SQL is quoted + limited.
+    #[test]
+    fn open_table_event_resolves_table_rows() {
+        let mut tree = SchemaTree::default();
+        tree.set_connections(vec![ConnectionProfile {
+            id: ConnectionId(7),
+            name: "local".into(),
+            host: "127.0.0.1".into(),
+            port: 1433,
+            database: None,
+            username: "sa".into(),
+            authentication: datara_domain::AuthenticationMode::SqlPassword,
+            encryption: datara_domain::EncryptionMode::Disabled,
+            trust_server_certificate: true,
+            secret_reference: datara_domain::SecretReference("r".into()),
+        }]);
+        let root_id = tree.visible()[0].id;
+        tree.expand_placeholder(0);
+        tree.replace_children(
+            root_id,
+            vec![TreeNode {
+                connection_id: Some(ConnectionId(7)),
+                database: Some("master".into()),
+                schema: Some("dbo".into()),
+                table: Some("users".into()),
+                ..TreeNode::new(NodeKind::Table, "dbo.users")
+            }],
+        );
+
+        // Connection row: not a table.
+        assert!(open_table_event(&tree, root_id, 1000).is_none());
+        // Unknown id: no event.
+        assert!(open_table_event(&tree, 999, 1000).is_none());
+
+        let table_id = tree.visible()[1].id;
+        let Some(AppEvent::PreviewSql {
+            conn_id,
+            database,
+            schema,
+            table,
+            sql,
+            ..
+        }) = open_table_event(&tree, table_id, 250)
+        else {
+            panic!("expected PreviewSql");
+        };
+        assert_eq!(conn_id, ConnectionId(7));
+        assert_eq!(
+            (database, schema, table),
+            ("master".into(), "dbo".into(), "users".into())
+        );
+        assert_eq!(sql, "SELECT TOP 250 * FROM [dbo].[users]");
+    }
 }

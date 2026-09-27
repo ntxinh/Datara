@@ -91,6 +91,16 @@ pub fn run(services: AppServices) -> anyhow::Result<()> {
         });
     }
 
+    {
+        let ui = ui.clone();
+        let limit = services.config.query.default_limit;
+        bridge.on_open_table(move |id| {
+            if let Some(event) = crate::bridge::open_table_event(&tree.lock(), id, limit) {
+                ui.dispatch(event);
+            }
+        });
+    }
+
     window.run()?;
     Ok(())
 }

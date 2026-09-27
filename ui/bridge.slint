@@ -31,7 +31,12 @@ export global Bridge {
     callback test-connection(ConnForm);
     /// Expand (lazy-load) or collapse a tree row.
     callback toggle-node(int);
+    /// Double-click on a table/view row: resolve to preview SELECT (3.2).
+    callback open-table(int);
     in property<[TreeNode]> tree;
     in property<string> status;
+    /// Last generated `SELECT TOP …` preview; shown above the status line
+    /// until the editor takes it over in Phase 4.
+    in property<string> preview-sql;
     in property<string> test-result;
 }

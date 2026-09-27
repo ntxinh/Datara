@@ -11,7 +11,7 @@ use datara_domain::{
     AuthenticationMode, ConnectionId, ConnectionProfile, Credentials, DomainError, EncryptionMode,
     Result as DomainResult, SecretReference, TableKind,
 };
-use datara_driver_mssql::MssqlDriver;
+use datara_driver_mssql::{quote_ident, MssqlDriver};
 use datara_secrets::SecretStore;
 use datara_storage::{NewConnection, Storage};
 use secrecy::SecretString;
@@ -72,6 +72,16 @@ impl AppServices {
             config,
         })
     }
+}
+
+/// `SELECT TOP {limit} * FROM [schema].[table]` for `open-table`. Sync and
+/// pure — generated on the UI thread; the Phase 5 grid will run it.
+pub fn preview_sql(schema: &str, table: &str, limit: u32) -> String {
+    format!(
+        "SELECT TOP {limit} * FROM {}.{}",
+        quote_ident(schema),
+        quote_ident(table)
+    )
 }
 
 fn encryption_mode(s: &str) -> EncryptionMode {
@@ -285,6 +295,7 @@ impl Backend {
         }
     }
 }
+
 #[cfg(test)]
 mod tests {
     //! End-to-end smoke for the save flow: profile row + keyring item must
@@ -294,6 +305,18 @@ mod tests {
 
     use super::*;
     use secrecy::ExposeSecret;
+
+    #[test]
+    fn preview_sql_quotes_and_substitutes_limit() {
+        assert_eq!(
+            preview_sql("dbo", "users", 500),
+            "SELECT TOP 500 * FROM [dbo].[users]"
+        );
+        assert_eq!(
+            preview_sql("a]b", "t]x", 1),
+            "SELECT TOP 1 * FROM [a]]b].[t]]x]"
+        );
+    }
 
     #[test]
     #[ignore = "needs a live Secret Service; run manually"]
