@@ -1,0 +1,184 @@
+import { Theme } from "../theme.slint";
+import { Bridge } from "../bridge.slint";
+import { ListView } from "std-widgets.slint";
+
+/// Virtualized result grid (Task 5.2): header with drag-resize + sort
+/// indicator, ListView body over `Bridge.rows`, rectangular cell selection,
+/// Ctrl+C copy, footer row count.
+export component ResultGrid {
+    // One delegate row height; the drag→row math in the cell TouchArea
+    // depends on it.
+    property<length> row-h: 24px;
+    /// Σ column widths — pushed by Rust (`Bridge.grid-w`); the wider of
+    /// that or the visible pane width so short grids still fill the body.
+    property<length> grid-w: max(Bridge.grid-w * 1px, body.visible-width);
+
+    VerticalLayout {
+        spacing: 0;
+
+        // ── Header ────────────────────────────────────────────────────
+        Rectangle {
+            height: 26px;
+            background: Theme.panel;
+            clip: true;
+
+            // Rows scroll horizontally via the ListView's horizontal
+            // scrollbar; the header rides -content-x to stay in sync.
+            header := HorizontalLayout {
+                x: -body.content-x;
+                spacing: 0;
+                alignment: start;
+
+                for col[i] in Bridge.columns: Rectangle {
+                    width: col.width * 1px;
+
+                    TouchArea {
+                        clicked => {
+                            Bridge.sort-column(i);
+                        }
+                    }
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 16px;
+                        Text {
+                            text: col.name;
+                            color: Theme.fg;
+                            font-size: 12px;
+                            font-weight: 600;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: i == Bridge.sort-col ? (Bridge.sort-asc ? "▲" : "▼") : "";
+                            color: Theme.accent;
+                            font-size: 9px;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    // 4px drag handle on the column's right edge.
+                    Rectangle {
+                        x: parent.width - 2px;
+                        width: 4px;
+                        background: handle-ta.has-hover || handle-ta.pressed
+                            ? Theme.accent : transparent;
+                        handle-ta := TouchArea {
+                            mouse-cursor: col-resize;
+                            property<length> last;
+                            pointer-event(e) => {
+                                if (e.kind == PointerEventKind.down) {
+                                    self.last = self.mouse-x;
+                                }
+                            }
+                            moved => {
+                                if (self.pressed) {
+                                    Bridge.resize-column(i, self.mouse-x - self.last);
+                                    self.last = self.mouse-x;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Rectangle { height: 1px; background: Theme.border; }
+
+        // ── Body ──────────────────────────────────────────────────────
+        fs := FocusScope {
+            vertical-stretch: 1;
+
+            key-pressed(e) => {
+                if (e.modifiers.control && (e.text == "c" || e.text == "C")) {
+                    Bridge.copy-selection();
+                    accept
+                } else {
+                    reject
+                }
+            }
+
+            body := ListView {
+                width: 100%;
+                height: 100%;
+
+                for row[r] in Bridge.rows: Rectangle {
+                    height: root.row-h;
+                    // Row spans the full scrollable width so selection
+                    // paint and grid lines cover the pan region.
+                    width: root.grid-w;
+
+                    hl := HorizontalLayout {
+                        spacing: 0;
+                        alignment: start;
+
+                        for cell[c] in row.cells: Rectangle {
+                            width: c < Bridge.columns.length
+                                ? Bridge.columns[c].width * 1px : 120px;
+                            background: Bridge.selection.active
+                                && r >= min(Bridge.selection.r0, Bridge.selection.r1)
+                                && r <= max(Bridge.selection.r0, Bridge.selection.r1)
+                                && c >= min(Bridge.selection.c0, Bridge.selection.c1)
+                                && c <= max(Bridge.selection.c0, Bridge.selection.c1)
+                                ? Theme.accent.with-alpha(0.25) : transparent;
+
+                            Text {
+                                x: 8px;
+                                width: parent.width - 12px;
+                                height: 100%;
+                                text: cell.is-null ? "NULL" : cell.text;
+                                color: Theme.fg;
+                                opacity: cell.is-null ? 0.45 : 1;
+                                font-italic: cell.is-null;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            Rectangle {
+                                x: parent.width - 1px;
+                                width: 1px;
+                                background: Theme.border;
+                                opacity: 0.5;
+                            }
+
+                            cell-ta := TouchArea {
+                                clicked => {
+                                    Bridge.grid-select(r, c);
+                                    fs.focus();
+                                }
+                                moved => {
+                                    if (self.pressed) {
+                                        // mouse-y is relative to this cell;
+                                        // extend the selection head by the
+                                        // whole rows crossed. parent.x is
+                                        // this cell's offset within the row.
+                                        Bridge.grid-drag(
+                                            r + Math.floor(self.mouse-y / root.row-h),
+                                            parent.x + self.mouse-x);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Rectangle { height: 1px; background: Theme.border; }
+
+        // ── Footer ────────────────────────────────────────────────────
+        Rectangle {
+            height: 22px;
+            background: Theme.panel;
+            Text {
+                x: 10px;
+                width: parent.width - 20px;
+                text: Bridge.result-info;
+                color: Theme.fg;
+                opacity: 0.7;
+                font-size: 11px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+    }
+}

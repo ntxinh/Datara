@@ -14,6 +14,7 @@ use parking_lot::Mutex;
 
 use crate::commands::{fuzzy, PALETTE_COMMANDS};
 use crate::editor_ui::{highlight_spans, line_count, resolve_sql, EditorState};
+use crate::grid::GridState;
 use crate::schema_tree::{NodeKind, SchemaTree, TreeNode};
 use crate::services::{preview_sql, Backend};
 use crate::{Bridge, CommandItem, HighlightSpan, MainWindow, TabItem, TreeNode as SlintTreeNode};
@@ -77,6 +78,8 @@ pub enum AppEvent {
 /// `UiHandle` must stay `Send` for `dispatch`.
 pub struct UiCtx {
     pub tree: Mutex<SchemaTree>,
+    /// Result grid state (Task 5.2): RowCache, column widths, selection.
+    pub grid: Mutex<GridState>,
     pub editor: Mutex<EditorState>,
     pub backend: Arc<Backend>,
     /// Runtime handle to spawn backend work from the UI thread.
@@ -178,12 +181,13 @@ fn apply(window: &MainWindow, cx: &Arc<UiCtx>, event: AppEvent) {
         AppEvent::Command(cmd) => run_command(window, cx, cmd),
         AppEvent::QueryStarted { .. } => {
             bridge.set_query_running(true);
+            cx.grid.lock().clear(&bridge, "Running…");
         }
         AppEvent::QueryResult {
             result, elapsed_ms, ..
         } => {
             bridge.set_query_running(cx.backend.any_running());
-            let (status, results) = match result.rows_affected {
+            let (status, info) = match result.rows_affected {
                 Some(n) if result.columns.is_empty() => (
                     format!("{n} rows affected in {elapsed_ms}ms"),
                     format!("{n} rows affected"),
@@ -193,22 +197,22 @@ fn apply(window: &MainWindow, cx: &Arc<UiCtx>, event: AppEvent) {
                     let suffix = if result.truncated { " (truncated)" } else { "" };
                     (
                         format!("{n} rows in {elapsed_ms}ms{suffix}"),
-                        format!("{n} rows returned{suffix}"),
+                        format!("{n} rows{suffix}"),
                     )
                 }
             };
             bridge.set_status(status.into());
-            bridge.set_results_text(results.into());
+            cx.grid.lock().set_result(&bridge, result, info);
         }
         AppEvent::QueryError { message, .. } => {
             bridge.set_query_running(cx.backend.any_running());
             bridge.set_status(message.clone().into());
-            bridge.set_results_text(format!("Error: {message}").into());
+            cx.grid.lock().clear(&bridge, &format!("Error: {message}"));
         }
         AppEvent::QueryCancelled { .. } => {
             bridge.set_query_running(cx.backend.any_running());
             bridge.set_status("Cancelled".into());
-            bridge.set_results_text("Query cancelled".into());
+            cx.grid.lock().clear(&bridge, "Query cancelled");
         }
     }
 }

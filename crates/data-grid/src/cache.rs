@@ -30,6 +30,11 @@ impl RowCache {
         self.columns.len()
     }
 
+    /// Column headers (name + data type) for the grid's header row.
+    pub fn columns(&self) -> &[QueryColumn] {
+        &self.columns
+    }
+
     /// Whether the result was truncated server-side.
     pub fn truncated(&self) -> bool {
         self.truncated

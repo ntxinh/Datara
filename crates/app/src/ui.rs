@@ -28,6 +28,7 @@ pub fn run(services: AppServices) -> anyhow::Result<()> {
     tracing::debug!(theme = %services.config.appearance.theme, "loaded config");
     let cx = Arc::new(UiCtx {
         tree: Mutex::new(SchemaTree::default()),
+        grid: Mutex::new(crate::grid::GridState::default()),
         editor: Mutex::new(EditorState::default()),
         backend: Arc::clone(&services.backend),
         handle: services.runtime.handle().clone(),
@@ -357,6 +358,52 @@ pub fn run(services: AppServices) -> anyhow::Result<()> {
         });
     }
 
+    // ── Result grid (Task 5.2) ───────────────────────────────────────
+
+    {
+        let cx = Arc::clone(&cx);
+        let weak = window.as_weak();
+        bridge.on_grid_select(move |row, col| {
+            let Some(win) = weak.upgrade() else { return };
+            cx.grid.lock().select(&win.global::<Bridge>(), row, col);
+        });
+    }
+
+    {
+        let cx = Arc::clone(&cx);
+        let weak = window.as_weak();
+        bridge.on_grid_drag(move |row, x| {
+            let Some(win) = weak.upgrade() else { return };
+            cx.grid.lock().drag(&win.global::<Bridge>(), row, x);
+        });
+    }
+
+    {
+        let cx = Arc::clone(&cx);
+        let weak = window.as_weak();
+        bridge.on_copy_selection(move || {
+            let Some(win) = weak.upgrade() else { return };
+            cx.grid.lock().copy(&win.global::<Bridge>());
+        });
+    }
+
+    {
+        let cx = Arc::clone(&cx);
+        let weak = window.as_weak();
+        bridge.on_resize_column(move |idx, delta| {
+            let Some(win) = weak.upgrade() else { return };
+            cx.grid.lock().resize(&win.global::<Bridge>(), idx, delta);
+        });
+    }
+
+    {
+        let cx = Arc::clone(&cx);
+        let weak = window.as_weak();
+        bridge.on_sort_column(move |idx| {
+            let Some(win) = weak.upgrade() else { return };
+            cx.grid.lock().sort(&win.global::<Bridge>(), idx);
+        });
+    }
     window.run()?;
     Ok(())
 }
@@ -667,5 +714,119 @@ mod tests {
         press(win, Key::Escape);
         assert!(!bridge.get_palette_visible(), "Escape closes the palette");
         assert_eq!(submitted.borrow().len(), 1);
+        // ── Result grid smoke (Task 5.2) ────────────────────────────
+        // Push a fake result through GridState (what AppEvent::QueryResult
+        // calls in apply): columns + rows + footer land on the Bridge, and
+        // the NULL cell carries is_null so .slint styles it.
+        let mut grid = crate::grid::GridState::default();
+        grid.set_result(
+            &bridge,
+            datara_domain::QueryResult {
+                columns: vec![
+                    datara_domain::QueryColumn {
+                        name: "id".into(),
+                        data_type: "int".into(),
+                    },
+                    datara_domain::QueryColumn {
+                        name: "note".into(),
+                        data_type: "nvarchar".into(),
+                    },
+                ],
+                rows: vec![
+                    datara_domain::QueryRow {
+                        cells: vec![
+                            datara_domain::Value::Int(1),
+                            datara_domain::Value::Text("x".into()),
+                        ],
+                    },
+                    datara_domain::QueryRow {
+                        cells: vec![datara_domain::Value::Int(2), datara_domain::Value::Null],
+                    },
+                ],
+                rows_affected: None,
+                truncated: false,
+            },
+            "2 rows".into(),
+        );
+        let cols = bridge.get_columns();
+        assert_eq!(cols.row_count(), 2, "columns pushed");
+        assert_eq!(cols.row_data(0).unwrap().name.as_str(), "id");
+        assert_eq!(cols.row_data(1).unwrap().data_type.as_str(), "nvarchar");
+        let rows = bridge.get_rows();
+        assert_eq!(rows.row_count(), 2, "rows pushed");
+        let r0 = rows.row_data(0).unwrap();
+        assert_eq!(r0.cells.row_count(), 2);
+        assert_eq!(r0.cells.row_data(0).unwrap().text.as_str(), "1");
+        assert!(!r0.cells.row_data(0).unwrap().is_null);
+        let r1 = rows.row_data(1).unwrap();
+        assert!(
+            r1.cells.row_data(1).unwrap().is_null,
+            "Value::Null must map to is-null for the 'NULL' styling path"
+        );
+        assert_eq!(bridge.get_result_info().as_str(), "2 rows");
+
+        // Cell click + drag: selection rectangle reaches Bridge.selection.
+        grid.select(&bridge, 0, 0);
+        grid.drag(&bridge, 1, 200.0); // x=200 inside col1 (140..280)
+        let sel = bridge.get_selection();
+        assert!(sel.active, "selection pushed");
+        assert_eq!((sel.r0, sel.c0, sel.r1, sel.c1), (0, 0, 1, 1));
+
+        // Sort col 0 descending: row order flips in the pushed model.
+        grid.sort(&bridge, 0);
+        grid.sort(&bridge, 0);
+        assert_eq!(bridge.get_sort_col(), 0);
+        assert!(!bridge.get_sort_asc(), "second click flips direction");
+        let rows = bridge.get_rows();
+        assert_eq!(
+            rows.row_data(0)
+                .unwrap()
+                .cells
+                .row_data(0)
+                .unwrap()
+                .text
+                .as_str(),
+            "2",
+            "descending sort puts id=2 first"
+        );
+        // Sort cleared the selection (coords refer to old row order).
+        assert!(!bridge.get_selection().active);
+
+        // Column resize clamps at the 40px minimum.
+        grid.resize(&bridge, 0, -1000.0);
+        assert_eq!(bridge.get_columns().row_data(0).unwrap().width, 40);
+
+        // Snapshot while the grid is populated — the cell region must
+        // differ from the empty pane (header bar + cell text land pixels).
+        let shot = win.take_snapshot().expect("grid snapshot");
+        let (w, h) = (shot.width() as usize, shot.height() as usize);
+        let px = shot.as_bytes();
+        let at = |x: usize, y: usize| -> [u8; 3] {
+            let i = (y * w + x) * 4;
+            [px[i], px[i + 1], px[i + 2]]
+        };
+        // The results pane is the bottom third of the window; the sorted
+        // grid paints fg-colored text there.
+        let mut fg_px = 0usize;
+        for y in (h * 2 / 3)..(h - 30) {
+            for x in 280..w.saturating_sub(10) {
+                let p = at(x, y);
+                if p.iter()
+                    .zip([0xCD, 0xD6, 0xF4])
+                    .all(|(a, b)| a.abs_diff(b) < 30)
+                {
+                    fg_px += 1;
+                }
+            }
+        }
+        assert!(
+            fg_px > 20,
+            "expected grid text pixels in the results pane, found {fg_px}"
+        );
+        // QueryStarted path: clear empties everything but keeps info text.
+        grid.clear(&bridge, "Running…");
+        assert_eq!(bridge.get_rows().row_count(), 0);
+        assert_eq!(bridge.get_columns().row_count(), 0);
+        assert_eq!(bridge.get_result_info().as_str(), "Running…");
     }
 }

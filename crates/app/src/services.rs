@@ -512,6 +512,7 @@ mod tests {
     /// Void dispatch — the test asserts on storage, not the UI.
     fn test_ui(svc: &AppServices) -> UiHandle {
         UiHandle::detached(std::sync::Arc::new(UiCtx {
+            grid: Mutex::new(crate::grid::GridState::default()),
             tree: Mutex::new(crate::schema_tree::SchemaTree::default()),
             editor: Mutex::new(crate::editor_ui::EditorState::default()),
             backend: Arc::clone(&svc.backend),

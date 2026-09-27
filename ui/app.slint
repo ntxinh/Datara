@@ -6,9 +6,11 @@ import { QueryEditor } from "editor/query_editor.slint";
 import { Button } from "std-widgets.slint";
 import { ConnDialog } from "dialogs/connection.slint";
 import { Bridge } from "bridge.slint";
+import { ResultGrid } from "grid/result_grid.slint";
 
 // Re-export so Rust's include_modules! sees the generated types.
-export { ConnForm, TreeNode, TabItem, HighlightSpan, CommandItem, Bridge } from "bridge.slint";
+export { ConnForm, TreeNode, TabItem, HighlightSpan, CommandItem,
+         GridCol, GridCell, GridRow, GridSel, Bridge } from "bridge.slint";
 
 export component MainWindow inherits Window {
     title: "Datara";
@@ -118,28 +120,9 @@ export component MainWindow inherits Window {
 
                     Rectangle { height: 1px; background: Theme.border; }
 
-                    // Results placeholder — Phase 5 puts the grid here.
-                    Rectangle {
+                    // Result grid (Task 5.2).
+                    ResultGrid {
                         vertical-stretch: 1;
-                        background: Theme.panel;
-                        Text {
-                            x: 10px;
-                            y: 6px;
-                            text: "Results";
-                            color: Theme.fg;
-                            opacity: 0.6;
-                            font-size: 12px;
-                        }
-                        Text {
-                            x: 10px;
-                            y: 26px;
-                            text: Bridge.results-text;
-                            color: Theme.fg;
-                            opacity: 0.8;
-                            font-size: 12px;
-                            wrap: word-wrap;
-                            width: parent.width - 20px;
-                        }
                     }
                 }
             }

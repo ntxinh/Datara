@@ -1,6 +1,7 @@
 mod bridge;
 mod commands;
 mod editor_ui;
+mod grid;
 mod schema_tree;
 mod services;
 mod ui;

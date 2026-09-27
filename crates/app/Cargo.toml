@@ -14,6 +14,7 @@ slint.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 datara-config.workspace = true
+datara-data-grid.workspace = true
 datara-database.workspace = true
 datara-domain.workspace = true
 datara-driver-mssql.workspace = true
@@ -23,6 +24,7 @@ secrecy.workspace = true
 datara-storage.workspace = true
 tokio.workspace = true
 parking_lot.workspace = true
+arboard = "3"
 
 [dev-dependencies]
 rstest.workspace = true

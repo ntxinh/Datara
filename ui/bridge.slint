@@ -47,6 +47,34 @@ export struct CommandItem {
     label: string,
     command: string,
 }
+/// One column header in the result grid (Task 5.2). `width` is pixels and
+/// live-updates while a resize handle is dragged.
+export struct GridCol {
+    name: string,
+    data-type: string,
+    width: int,
+}
+
+/// One cell of a grid row: display text plus the NULL flag for styling.
+export struct GridCell {
+    text: string,
+    is-null: bool,
+}
+
+/// One row of the result grid.
+export struct GridRow {
+    cells: [GridCell],
+}
+
+/// Rectangular cell selection in row/col indices (both ends inclusive).
+export struct GridSel {
+    r0: int,
+    c0: int,
+    r1: int,
+    c1: int,
+    active: bool,
+}
+
 
 /// Slint ↔ Tokio bridge. Callbacks fire on the UI thread and spawn work on
 /// the Tokio runtime; `in` properties are pushed back via
@@ -78,8 +106,6 @@ export global Bridge {
     /// (completion apply, tab switch). The editor watches `changed` and
     /// calls `set-selection-offsets(v, v)`.
     in property<int> set-cursor;
-    /// Text for the results placeholder (Phase 5 replaces it with a grid).
-    in property<string> results-text;
     /// Ctrl+K toggles the schema filter LineEdit over the sidebar.
     in-out property<bool> schema-filter-visible;
     /// Filter string applied to the schema tree (the sidebar LineEdit's
@@ -105,6 +131,33 @@ export global Bridge {
     /// The "New connection" dialog. Rust sets it for the palette's
     /// "Connect…" item; Slint writes false on close.
     in-out property<bool> conn-dialog-visible;
+
+    // ── Result grid (Task 5.2) ───────────────────────────────────────
+    /// Column headers for the grid. Empty while no result is showing.
+    in property<[GridCol]> columns;
+    /// Result rows; ListView virtualizes over this model.
+    in property<[GridRow]> rows;
+    /// Total scrollable grid width in px (Σ column widths).
+    in property<int> grid-w;
+    /// Footer text: "N rows" / "N rows (truncated)" / "N rows affected" /
+    /// the error message.
+    in property<string> result-info;
+    /// Current rectangular cell selection (for delegate highlighting).
+    in property<GridSel> selection;
+    /// Sorted column + direction for the header indicator (-1 = none).
+    in property<int> sort-col: -1;
+    in property<bool> sort-asc: true;
+    /// Click on a cell: set the selection anchor.
+    callback grid-select(row: int, col: int);
+    /// Drag over the grid: extend the selection head. `row` is the delegate
+    /// row + the mouse's row delta; `x` is the pointer's x within the row.
+    callback grid-drag(row: int, x: length);
+    /// Ctrl+C with the grid focused: copy the selection as TSV.
+    callback copy-selection();
+    /// Column resize handle moved by `delta` px since the last event.
+    callback resize-column(idx: int, delta: length);
+    /// Header clicked: toggle-sort that column.
+    callback sort-column(idx: int);
 
     /// Current completion candidates; non-empty shows the popup.
     in property<[string]> completions;
