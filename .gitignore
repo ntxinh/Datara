@@ -16,3 +16,6 @@
 *~
 .idea/
 .vscode/
+
+# nested target dirs (test artifacts, per-crate builds)
+target/
