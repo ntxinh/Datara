@@ -23,6 +23,23 @@ export struct TreeNode {
     expanded: bool,
 }
 
+/// One editor tab in the tab strip (Task 4.2). `id` is assigned by Rust's
+/// `EditorState`; `title` is the rendered label.
+export struct TabItem {
+    id: int,
+    title: string,
+}
+
+/// One syntax-highlight span, in *character cells* (not pixels): the editor
+/// turns `line`/`col` into x/y with its measured monospace metrics so the
+/// overlay stays aligned when the font size changes.
+export struct HighlightSpan {
+    text: string,
+    color: color,
+    line: int,
+    col: int,
+}
+
 /// Slint ↔ Tokio bridge. Callbacks fire on the UI thread and spawn work on
 /// the Tokio runtime; `in` properties are pushed back via
 /// `invoke_from_event_loop` (see bridge.rs). Grows in later tasks.
@@ -35,8 +52,50 @@ export global Bridge {
     callback open-table(int);
     in property<[TreeNode]> tree;
     in property<string> status;
-    /// Last generated `SELECT TOP …` preview; shown above the status line
-    /// until the editor takes it over in Phase 4.
-    in property<string> preview-sql;
     in property<string> test-result;
+
+    // ── Editor (Task 4.2) ────────────────────────────────────────────
+    /// Editor buffer content. Pushed by Rust on tab switch / completion /
+    /// preview; bound two-way to the editor's TextInput.
+    in-out property<string> editor-text;
+    /// Font size (pt) from `[editor] font_size` in config.toml.
+    in property<int> editor-font-size;
+    /// Line count of `editor-text` for the gutter.
+    in property<int> line-count: 1;
+    /// "Ln X, Col Y" for the status bar.
+    in property<string> cursor-position;
+    /// Highlight spans for the overlay layer, in char cells.
+    in property<[HighlightSpan]> highlight-spans;
+    /// One-shot cursor placement after a programmatic text change
+    /// (completion apply, tab switch). The editor watches `changed` and
+    /// calls `set-selection-offsets(v, v)`.
+    in property<int> set-cursor;
+    /// Text for the results placeholder (Phase 5 replaces it with a grid).
+    in property<string> results-text;
+    /// Ctrl+K toggles the schema filter LineEdit over the sidebar.
+    in-out property<bool> schema-filter-visible;
+
+    /// Current completion candidates; non-empty shows the popup.
+    in property<[string]> completions;
+    /// Selected row in the completion popup. In-out so the popup's own
+    /// TouchArea can pick a row without a Rust round-trip.
+    in-out property<int> completion-index;
+    /// Text changed; `cursor` is the caret's UTF-8 byte offset at that
+    /// moment (used for the completion prefix).
+    callback editor-changed(text: string, cursor: int);
+    /// Caret/selection moved. `line`/`col` are 1-based char coordinates.
+    callback cursor-changed(cursor: int, anchor: int, line: int, col: int);
+    /// Keyboard command router. Returns true when the key was consumed —
+    /// used by the editor's `key-pressed` to decide `accept`/`reject`.
+    callback command(text: string, ctrl: bool, shift: bool, alt: bool) -> bool;
+    /// Popup keys: "accept" | "up" | "down" | "escape". Rust decides what
+    /// to do (nothing when the popup is hidden).
+    callback completion-action(string);
+
+    // ── Tabs (Task 4.2) ─────────────────────────────────────────────
+    in property<[TabItem]> tabs;
+    in property<int> active-tab;
+    callback new-tab();
+    callback close-tab(id: int);
+    callback switch-tab(id: int);
 }

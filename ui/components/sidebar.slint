@@ -1,4 +1,4 @@
-import { Button, ListView } from "std-widgets.slint";
+import { Button, LineEdit, ListView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Bridge } from "../bridge.slint";
 
@@ -51,6 +51,13 @@ export component Sidebar inherits Rectangle {
                     root.new-connection-requested();
                 }
             }
+        }
+
+        // Ctrl+K toggles this filter box (Task 4.2; actual filtering lands
+        // with the schema search task — for now it is the focus target).
+        if Bridge.schema-filter-visible: LineEdit {
+            height: 28px;
+            placeholder-text: "Filter schema…";
         }
 
         Rectangle {
@@ -110,19 +117,5 @@ export component Sidebar inherits Rectangle {
             background: Theme.border;
         }
 
-        // Empty string renders at zero height — no conditional needed.
-        Text {
-            text: Bridge.preview-sql;
-            color: Theme.accent;
-            font-size: 11px;
-            wrap: word-wrap;
-        }
-        Text {
-            text: Bridge.status;
-            color: Theme.fg;
-            opacity: 0.7;
-            font-size: 11px;
-            wrap: word-wrap;
-        }
     }
 }

@@ -4,12 +4,12 @@ Planned Slint component tree (all under `ui/`):
 
 | Component | File | Role | Status |
 |---|---|---|---|
-| `MainWindow` | `app.slint` | root window, layout shell | implemented (placeholder) |
+| `MainWindow` | `app.slint` | root window, toolbar/sidebar/editor/statusbar shell | implemented |
 | `Theme` | `theme.slint` | color palette, dark/light | implemented |
-| schema tree | `components/schema_tree.slint` | connection browser | planned — phase 3 |
-| toolbar / status bar / tabs | `components/{toolbar,status_bar,tabs}.slint` | chrome | planned — phase 4 |
-| connection dialog | `dialogs/connection.slint` | profile editor | planned — phase 2 |
-| query editor | `editor/query_editor.slint` | SQL editing surface | planned — phase 4 |
+| schema tree | `components/sidebar.slint` | connection browser | implemented — 3.1 |
+| tabs | `components/tabs.slint` | editor tab strip | implemented — 4.2 |
+| connection dialog | `dialogs/connection.slint` | profile editor | implemented — 2.4 |
+| query editor | `editor/query_editor.slint` | SQL editing surface | implemented — 4.2 |
 | result grid | `grid/result_grid.slint` | virtualized results | planned — phase 5 |
 | history page | `pages/history.slint` | query history | planned — phase 6 |
 

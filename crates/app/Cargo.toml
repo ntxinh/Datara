@@ -18,10 +18,15 @@ datara-database.workspace = true
 datara-domain.workspace = true
 datara-driver-mssql.workspace = true
 datara-secrets.workspace = true
-datara-storage.workspace = true
+datara-sql-editor.workspace = true
 secrecy.workspace = true
+datara-storage.workspace = true
 tokio.workspace = true
 parking_lot.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true
+i-slint-backend-testing.workspace = true
 
 [build-dependencies]
 slint-build.workspace = true

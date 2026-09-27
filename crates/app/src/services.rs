@@ -39,6 +39,9 @@ pub struct Backend {
     pub storage: Arc<Storage>,
     pub secrets: Arc<SecretStore>,
     pub service: Arc<DatabaseService<MssqlDriver>>,
+    /// Last connection that produced schema data — the fallback target for
+    /// editor tabs that weren't opened from a tree node (Task 4.2).
+    last_conn_id: std::sync::atomic::AtomicI64,
 }
 
 /// Long-lived application state: runtime + backend + config.
@@ -65,6 +68,7 @@ impl AppServices {
             storage,
             secrets,
             service,
+            last_conn_id: std::sync::atomic::AtomicI64::new(-1),
         });
         Ok(Self {
             runtime,
@@ -193,9 +197,51 @@ impl Backend {
         Ok((profile, creds))
     }
 
+    /// Connection the editor falls back to when the active tab carries
+    /// none — set by the last tree action that used a session.
+    pub fn last_conn_id(&self) -> Option<ConnectionId> {
+        let v = self.last_conn_id.load(std::sync::atomic::Ordering::Relaxed);
+        (v >= 0).then_some(ConnectionId(v))
+    }
+
+    pub fn set_last_conn_id(&self, id: ConnectionId) {
+        self.last_conn_id
+            .store(id.0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// `Command::ExecuteQuery`: run `sql` and report the row count (or the
+    /// error) back through the status/results area. Phase 5 swaps the
+    /// row-count status for the real grid.
+    pub async fn execute_sql(
+        &self,
+        conn_id: ConnectionId,
+        database: Option<String>,
+        sql: String,
+        max_rows: usize,
+        ui: UiHandle,
+    ) {
+        self.set_last_conn_id(conn_id);
+        match self.service.execute(conn_id, database, sql, max_rows).await {
+            Ok(handle) => {
+                let event = match handle.await {
+                    Ok(Ok(r)) => {
+                        AppEvent::QueryDone(Ok(r.rows_affected.unwrap_or(r.rows.len() as u64)))
+                    }
+                    Ok(Err(e)) => AppEvent::QueryDone(Err(e.to_string())),
+                    Err(e) => AppEvent::QueryDone(Err(format!("task failed: {e}"))),
+                };
+                ui.dispatch(event);
+            }
+            Err(e) => ui.dispatch(AppEvent::QueryDone(Err(e.to_string()))),
+        }
+    }
+
     /// `toggle-node` on an unexpanded row: fetch its children by kind and
     /// dispatch them back for `SchemaTree::replace_children`.
     pub async fn expand_node(&self, node: TreeNode, ui: UiHandle) {
+        if let Some(id) = node.connection_id {
+            self.set_last_conn_id(id);
+        }
         let result = self
             .node_children(&node)
             .await
@@ -304,7 +350,20 @@ mod tests {
     //!   DATARA_DATA_DIR=$(mktemp -d) cargo test -p datara -- --ignored
 
     use super::*;
+    use crate::bridge::UiCtx;
+    use parking_lot::Mutex;
     use secrecy::ExposeSecret;
+
+    /// Void dispatch — the test asserts on storage, not the UI.
+    fn test_ui(svc: &AppServices) -> UiHandle {
+        UiHandle::detached(std::sync::Arc::new(UiCtx {
+            tree: Mutex::new(crate::schema_tree::SchemaTree::default()),
+            editor: Mutex::new(crate::editor_ui::EditorState::default()),
+            backend: Arc::clone(&svc.backend),
+            handle: svc.runtime.handle().clone(),
+            query_limit: svc.config.query.default_limit,
+        }))
+    }
 
     #[test]
     fn preview_sql_quotes_and_substitutes_limit() {
@@ -337,7 +396,7 @@ mod tests {
         };
 
         let (id, list) = svc.runtime.block_on(async {
-            svc.backend.save_connection(form, UiHandle::default()).await;
+            svc.backend.save_connection(form, test_ui(&svc)).await;
             let list = svc.backend.storage.connections().list().await.unwrap();
             let row = list.iter().find(|c| c.name == "smoke").unwrap().clone();
             let secret = svc

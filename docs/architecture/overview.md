@@ -7,6 +7,7 @@ composition root. See `DESIGN.md` for the system diagram and crate graph.
 
 **Implemented:** workspace scaffold, `domain` types, `config`, `storage`,
 `database` traits, `sql-editor` (statement splitting, highlighting,
-completions), minimal `app` binary (GUI launch + `mcp-serve` stub).
+completions), `app` GUI (sidebar, tabbed query editor with highlight overlay
++ completions, command dispatch, status bar) + `mcp-serve` stub.
 **Pending:** driver-mssql, secrets, data-grid, mcp-server bodies —
 phases 2–7.

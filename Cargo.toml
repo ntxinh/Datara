@@ -25,6 +25,7 @@ datara-storage = { path = "crates/storage" }
 datara-config = { path = "crates/config" }
 slint = { version = "1.18", default-features = false, features = ["backend-winit", "renderer-femtovg", "std", "compat-1-18"] }
 slint-build = "1.18"
+i-slint-backend-testing = { version = "1.18", features = ["renderer-software"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "net"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 tokio-stream = "0.1"

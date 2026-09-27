@@ -1309,8 +1309,11 @@ dependencies = [
  "datara-domain",
  "datara-driver-mssql",
  "datara-secrets",
+ "datara-sql-editor",
  "datara-storage",
+ "i-slint-backend-testing",
  "parking_lot",
+ "rstest",
  "secrecy",
  "slint",
  "slint-build",
@@ -2631,6 +2634,19 @@ dependencies = [
  "i-slint-core",
  "i-slint-core-macros",
  "i-slint-renderer-femtovg",
+]
+
+[[package]]
+name = "i-slint-backend-testing"
+version = "1.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01943d6c5ea5bc913d497bdaa423c309e7627afff47a6794bfd13be5c564209f"
+dependencies = [
+ "cfg_aliases",
+ "i-slint-common",
+ "i-slint-core",
+ "i-slint-renderer-software",
+ "vtable",
 ]
 
 [[package]]
@@ -4556,7 +4572,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
