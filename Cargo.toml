@@ -50,8 +50,7 @@ anyhow = "1"
 jiff = "0.2"
 uuid = { version = "1", features = ["v4", "serde"] }
 rstest = "0.27"
-testcontainers = { version = "0.15", features = ["blocking"] }
-testcontainers-modules = "0.15"
+testcontainers = "0.28"
 criterion = "0.8"
 dirs = "7"
 tempfile = "3"

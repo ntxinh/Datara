@@ -1,9 +1,11 @@
-//! Database driver abstraction traits.
+//! Database driver abstraction traits and the shared [`DatabaseService`].
 //!
 //! This crate is the seam between the domain layer and concrete drivers
 //! (e.g. the MSSQL driver). The `list_*` methods take a `database` argument
 //! because MSSQL requires a database context for metadata queries; `execute`
 //! takes `max_rows` so that drivers must cap row materialization (spec §11).
+
+mod service;
 
 use async_trait::async_trait;
 use datara_domain::{
@@ -22,10 +24,11 @@ pub trait DatabaseDriver: Send + Sync {
     ) -> Result<Box<dyn DatabaseSession>>;
 }
 
-/// An open database session. Sessions are `Send` so a single session can be
-/// driven from the async runtime; each driver serializes access internally.
+/// An open database session. Sessions are `Send + Sync` so a single session
+/// can be shared across tasks via `Arc`; each driver serializes access
+/// internally.
 #[async_trait]
-pub trait DatabaseSession: Send {
+pub trait DatabaseSession: Send + Sync {
     /// List databases visible to this session.
     async fn list_databases(&self) -> Result<Vec<DatabaseInfo>>;
 
@@ -56,6 +59,8 @@ pub trait DatabaseSession: Send {
     /// `a]b` becomes `[a]]b]`.
     fn quote_ident(&self, ident: &str) -> String;
 }
+
+pub use service::{DatabaseService, QueryHandle, SecretSource};
 
 #[cfg(test)]
 mod tests {
