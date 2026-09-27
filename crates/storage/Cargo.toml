@@ -7,3 +7,11 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+datara-domain.workspace = true
+jiff.workspace = true
+sqlx = { workspace = true, features = ["macros"] }
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
