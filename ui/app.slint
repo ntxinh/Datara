@@ -1,3 +1,22 @@
+import { Theme } from "theme.slint";
+
 export component MainWindow inherits Window {
     title: "Datara";
+    preferred-width: 1100px;
+    preferred-height: 700px;
+    background: Theme.bg;
+
+    VerticalLayout {
+        padding: 16px;
+        Text {
+            text: "Datara";
+            font-size: 28px;
+            color: Theme.fg;
+        }
+        Text {
+            text: "MSSQL client — foundation build";
+            color: Theme.fg;
+            opacity: 0.6;
+        }
+    }
 }

@@ -1,0 +1,10 @@
+// Catppuccin-ish palette (Mocha dark / Latte light).
+// `dark` will be bound to Palette/color-scheme when light mode support lands.
+export global Theme {
+    out property<bool> dark: true;
+    out property<color> bg: dark ? #1e1e2e : #fafafa;
+    out property<color> fg: dark ? #cdd6f4 : #4c4f69;
+    out property<color> panel: dark ? #181825 : #e6e9ef;
+    out property<color> border: dark ? #313244 : #ccd0da;
+    out property<color> accent: #89b4fa;
+}
