@@ -30,6 +30,13 @@ pub struct GridState {
 }
 
 impl GridState {
+    /// Rows in the cached result — headless smoke tests poll this to see
+    /// a dispatched `QueryResult` land without touching the Slint model.
+    #[cfg(test)]
+    pub(crate) fn cached_rows(&self) -> usize {
+        self.cache.as_ref().map_or(0, |c| c.row_count())
+    }
+
     /// Install a finished result: cache it, size columns to a default
     /// width, push both models and the footer text; reset selection/sort.
     pub fn set_result(&mut self, bridge: &Bridge, result: QueryResult, info: String) {

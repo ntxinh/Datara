@@ -491,18 +491,26 @@ mod tests {
         });
     }
 
+    /// One platform per process — both tests share the threaded testing
+    /// backend (`threading` gives a real event-loop queue; `mock_time`
+    /// keeps timers deterministic).
+    fn testing_platform() {
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            slint::platform::set_platform(Box::new(i_slint_backend_testing::TestingBackend::new(
+                i_slint_backend_testing::TestingBackendOptions {
+                    mock_time: true,
+                    threading: true,
+                    renderer_name: Some("software".into()),
+                },
+            )))
+            .expect("platform init");
+        });
+    }
+
     #[test]
     fn ui_smoke_keys_and_overlay() {
-        // One platform per process: mock time + event loop + real
-        // software rasterizer so take_snapshot produces pixels.
-        slint::platform::set_platform(Box::new(i_slint_backend_testing::TestingBackend::new(
-            i_slint_backend_testing::TestingBackendOptions {
-                mock_time: true,
-                threading: true,
-                renderer_name: Some("software".into()),
-            },
-        )))
-        .expect("platform init");
+        testing_platform();
 
         let window = MainWindow::new().unwrap();
         window.show().unwrap();
@@ -976,5 +984,117 @@ mod tests {
         assert_eq!(bridge.get_rows().row_count(), 0);
         assert_eq!(bridge.get_columns().row_count(), 0);
         assert_eq!(bridge.get_result_info().as_str(), "Running…");
+    }
+
+    /// Live Task 5.3 smoke: `AppEvent::PreviewSql` — what double-clicking a
+    /// table dispatches — opens a tab AND executes through the same
+    /// Ctrl+Enter path, landing rows in the grid. Needs datara-mssql on
+    /// 127.0.0.1:11433 (sa / Datara!1234) and a session Secret Service.
+    #[test]
+    #[ignore = "needs datara-mssql on 127.0.0.1:11433 and a session Secret Service"]
+    fn ui_smoke_preview_executes_into_grid() {
+        use datara_domain::{AuthenticationMode, EncryptionMode};
+        use datara_storage::NewConnection;
+        use secrecy::SecretString;
+        use std::time::{Duration, Instant};
+
+        // The event loop only runs on the thread that installed the
+        // platform — keep this test `#[ignore]`d so nothing else claims
+        // `set_platform` first.
+        testing_platform();
+
+        let tmp = std::env::temp_dir().join(format!("datara-preview-smoke-{}", std::process::id()));
+        std::env::set_var("DATARA_DATA_DIR", &tmp);
+        std::env::set_var("DATARA_CONFIG_DIR", tmp.join("cfg"));
+        std::env::set_var("DATARA_STATE_DIR", tmp.join("state"));
+
+        let svc = AppServices::init().expect("services init");
+        let (id, reference) = svc.runtime.block_on(async {
+            let repo = svc.backend.storage.connections();
+            let id = repo
+                .insert(NewConnection {
+                    name: "preview-smoke".into(),
+                    host: "127.0.0.1".into(),
+                    port: 11433,
+                    database: Some("master".into()),
+                    username: "sa".into(),
+                    authentication: AuthenticationMode::SqlPassword,
+                    encryption: EncryptionMode::Preferred,
+                    trust_server_certificate: true,
+                })
+                .await
+                .unwrap();
+            let reference = repo.get(id).await.unwrap().secret_reference;
+            svc.backend
+                .secrets
+                .save(
+                    &reference,
+                    "preview-smoke",
+                    &SecretString::from("Datara!1234".to_owned()),
+                )
+                .await
+                .unwrap();
+            (id, reference)
+        });
+
+        let cx = Arc::new(UiCtx {
+            tree: Mutex::new(SchemaTree::default()),
+            grid: Mutex::new(crate::grid::GridState::default()),
+            editor: Mutex::new(EditorState::default()),
+            backend: Arc::clone(&svc.backend),
+            handle: svc.runtime.handle().clone(),
+            query_limit: svc.config.query.default_limit,
+        });
+        let window = MainWindow::new().unwrap();
+        let bridge = window.global::<Bridge>();
+
+        // Exactly what on_open_table produces for a sys.tables node.
+        crate::bridge::apply(
+            &window,
+            &cx,
+            AppEvent::PreviewSql {
+                conn_id: id,
+                database: "master".into(),
+                sql: crate::services::preview_sql("sys", "tables", 5),
+                label: "sys.tables".into(),
+            },
+        );
+        assert_eq!(
+            bridge.get_editor_text().as_str(),
+            "SELECT TOP 5 * FROM [sys].[tables]",
+            "preview SQL must land in the new tab"
+        );
+        // The spawn happened synchronously — proof the PreviewSql arm ran
+        // the same execute entry as Ctrl+Enter (run_command → ExecuteQuery).
+        assert_eq!(bridge.get_status().as_str(), "Executing…");
+
+        // Terminal events return through UiHandle::dispatch → the event
+        // loop, so run it on this thread; a poll thread watches the
+        // Rust-side GridState and quits once the result is applied (the
+        // running-slot flag drops before the event is dispatched, so it
+        // can't serve as the done signal).
+        {
+            let cx = Arc::clone(&cx);
+            std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(60);
+                while Instant::now() < deadline {
+                    if cx.grid.lock().cached_rows() > 0 {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                slint::quit_event_loop().unwrap();
+            });
+        }
+        slint::run_event_loop().unwrap();
+
+        assert_eq!(cx.grid.lock().cached_rows(), 5, "preview must execute");
+        assert_eq!(bridge.get_rows().row_count(), 5);
+        assert!(!bridge.get_status().is_empty());
+
+        svc.runtime
+            .block_on(svc.backend.secrets.delete(&reference))
+            .unwrap();
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

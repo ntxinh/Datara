@@ -126,7 +126,7 @@ impl UiHandle {
     }
 }
 
-fn apply(window: &MainWindow, cx: &Arc<UiCtx>, event: AppEvent) {
+pub(crate) fn apply(window: &MainWindow, cx: &Arc<UiCtx>, event: AppEvent) {
     let bridge = window.global::<Bridge>();
     match event {
         AppEvent::ConnectionsLoaded(profiles) => {
@@ -163,20 +163,22 @@ fn apply(window: &MainWindow, cx: &Arc<UiCtx>, event: AppEvent) {
             label,
         } => {
             cx.backend.set_last_conn_id(conn_id);
-            let mut editor = cx.editor.lock();
-            editor.open_sql_tab(
-                label.clone(),
-                sql.clone(),
-                Some(conn_id),
-                Some(database.clone()),
-            );
-            push_tabs(&bridge, &editor);
-            let jump = editor.cursor_jump(sql.len());
-            bridge.set_editor_text(sql.clone().into());
+            // Editor lock scoped to the tab+text setup so the execute below
+            // (which re-locks via run_command) can't recurse on it.
+            {
+                let mut editor = cx.editor.lock();
+                editor.open_sql_tab(label, sql.clone(), Some(conn_id), Some(database));
+                push_tabs(&bridge, &editor);
+                let jump = editor.cursor_jump(sql.len());
+                bridge.set_editor_text(sql.clone().into());
+                bridge.set_set_cursor(jump);
+            }
             bridge.set_line_count(line_count(&sql) as i32);
             bridge.set_highlight_spans(spans_model(&sql));
-            bridge.set_set_cursor(jump);
-            bridge.set_status(format!("Preview: {label}").into());
+            // Open-table previews run immediately (TablePro behavior): the
+            // same execute entry Ctrl+Enter takes. The preview tab's caret
+            // is at 0 → resolve_sql picks the whole statement.
+            run_command(window, cx, Command::ExecuteQuery);
         }
         AppEvent::Command(cmd) => run_command(window, cx, cmd),
         AppEvent::QueryStarted { .. } => {
