@@ -15,7 +15,7 @@ with a Slint UI. TablePlus-style: fast, keyboard-first, no Electron.
 | Feature | Status |
 |---|---|
 | Workspace, domain types, config, storage, minimal window | ✅ done |
-| Wayland launch with app ID `io.github.ntxinh.Datara` | ✅ done |
+| Wayland launch (app_id `datara`; packaging ID `io.github.ntxinh.Datara`) | ✅ done |
 | MSSQL connection over TDS 7.3 (Tiberius) | 🚧 planned (phase 2) |
 | Passwords via Secret Service (GNOME Keyring) | 🚧 planned (phase 2) |
 | TLS modes with explicit certificate policy | 🚧 planned (phase 2) |
