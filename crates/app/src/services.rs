@@ -305,34 +305,44 @@ impl Backend {
                 return;
             }
         };
-        {
+        let armed = {
             let mut running = self.running.lock();
             match running.get_mut(&tab_id) {
-                // Cancelled while connecting: kill it before it starts —
-                // cancel_query already dispatched QueryCancelled.
-                None => {
-                    handle.abort();
-                    return;
+                Some(rq) => {
+                    rq.abort = Some(handle.abort_handle());
+                    true
                 }
-                Some(rq) => rq.abort = Some(handle.abort_handle()),
+                None => false,
             }
+        };
+        if !armed {
+            // Cancelled while connecting: kill it before it starts —
+            // cancel_query already dispatched QueryCancelled. The session
+            // `execute` just obtained was inserted into the pool *after*
+            // cancel's disconnect ran, so evict it again: aborting
+            // mid-query may leave its TDS stream desynced.
+            handle.abort();
+            let _ = handle.await; // deterministic task teardown
+            self.service.disconnect(conn_id).await;
+            return;
         }
         ui.dispatch(AppEvent::QueryStarted { tab: tab_id });
         let started = std::time::Instant::now();
-        match tokio::time::timeout(self.query_timeout, &mut handle).await {
-            Ok(Ok(Ok(r))) => ui.dispatch(AppEvent::QueryResult {
+        let outcome = match tokio::time::timeout(self.query_timeout, &mut handle).await {
+            Ok(Ok(Ok(r))) => Some(AppEvent::QueryResult {
                 tab: tab_id,
                 result: r,
                 elapsed_ms: started.elapsed().as_millis() as u64,
             }),
-            Ok(Ok(Err(e))) => ui.dispatch(AppEvent::QueryError {
+            Ok(Ok(Err(e))) => Some(AppEvent::QueryError {
                 tab: tab_id,
                 message: query_error_text(&e),
             }),
             Ok(Err(je)) if je.is_cancelled() => {
                 // The cancel path already dispatched QueryCancelled.
+                None
             }
-            Ok(Err(je)) => ui.dispatch(AppEvent::QueryError {
+            Ok(Err(je)) => Some(AppEvent::QueryError {
                 tab: tab_id,
                 message: format!("task failed: {je}"),
             }),
@@ -341,13 +351,19 @@ impl Backend {
                 // the server is still processing this batch.
                 handle.abort();
                 self.service.disconnect(conn_id).await;
-                ui.dispatch(AppEvent::QueryError {
+                Some(AppEvent::QueryError {
                     tab: tab_id,
                     message: format!("Query timed out after {}s", self.query_timeout.as_secs()),
-                });
+                })
             }
-        }
+        };
+        // Remove the slot BEFORE the terminal event: `apply` consults
+        // `any_running()` when the event lands — dispatching first would
+        // leave the Stop button visible.
         self.running.lock().remove(&tab_id);
+        if let Some(event) = outcome {
+            ui.dispatch(event);
+        }
     }
 
     /// `Bridge.cancel-query` / Stop button: abort the running query — the

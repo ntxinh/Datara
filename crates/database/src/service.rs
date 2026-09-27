@@ -285,6 +285,9 @@ mod tests {
         connects: Arc<AtomicUsize>,
         fail: bool,
         hang: bool,
+        /// When set, `connect` parks on this notify — lets a test pause a
+        /// connect mid-flight (cancel-during-connect races).
+        gate: Option<Arc<tokio::sync::Notify>>,
     }
 
     #[async_trait]
@@ -295,6 +298,9 @@ mod tests {
             _c: &Credentials,
         ) -> Result<Box<dyn DatabaseSession>> {
             self.connects.fetch_add(1, Ordering::SeqCst);
+            if let Some(gate) = &self.gate {
+                gate.notified().await;
+            }
             Ok(Box::new(StubSession {
                 fail: self.fail,
                 hang: self.hang,
@@ -305,6 +311,19 @@ mod tests {
     async fn service(
         fail: bool,
         hang: bool,
+    ) -> (
+        DatabaseService<StubDriver>,
+        Arc<AtomicUsize>,
+        ConnectionId,
+        tempfile::TempDir,
+    ) {
+        service_opts(fail, hang, None).await
+    }
+
+    async fn service_opts(
+        fail: bool,
+        hang: bool,
+        gate: Option<Arc<tokio::sync::Notify>>,
     ) -> (
         DatabaseService<StubDriver>,
         Arc<AtomicUsize>,
@@ -335,6 +354,7 @@ mod tests {
                 connects: Arc::clone(&connects),
                 fail,
                 hang,
+                gate,
             },
             sessions: Mutex::new(HashMap::new()),
         };
@@ -458,5 +478,44 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    /// Cancel-during-connect ordering: `execute` awaits `session()` (which
+    /// inserts into the pool) *before* returning its handle, so a caller
+    /// that aborts the fresh handle and disconnects again always evicts the
+    /// late-inserted session. Simulates `Backend::execute_sql`'s
+    /// slot-vanished branch.
+    #[tokio::test]
+    async fn late_inserted_session_is_evicted() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let (svc, connects, id, _dir) = service_opts(false, true, Some(gate.clone())).await;
+        let svc = Arc::new(svc);
+
+        // Spawn execute; it parks inside connect on the gate.
+        let svc2 = Arc::clone(&svc);
+        let exec = tokio::spawn(async move { svc2.execute(id, None, "WAITFOR".into(), 10).await });
+        for _ in 0..100 {
+            if connects.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        // "Cancel" while the connect is still in flight.
+        svc.disconnect(id).await;
+        gate.notify_one();
+        let handle = exec.await.unwrap().unwrap();
+
+        // What execute_sql does when its slot vanished: abort, then
+        // disconnect — the session inserted during the await is evicted.
+        handle.abort();
+        let _ = handle.await;
+        svc.disconnect(id).await;
+        assert!(svc.sessions.lock().await.is_empty());
+
+        // Next use reconnects instead of reusing the abandoned session.
+        gate.notify_one();
+        svc.session(id).await.unwrap();
+        assert_eq!(connects.load(Ordering::SeqCst), 2);
     }
 }
