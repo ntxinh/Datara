@@ -32,7 +32,7 @@ futures-util = "0.3"
 tiberius = { version = "0.13", default-features = false, features = ["tds73", "rustls"] }
 async-trait = "0.1"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "migrate"] }
-secret-service = { version = "5", features = ["rt-tokio-crypto-rustls"] }
+secret-service = { version = "5", features = ["rt-tokio-crypto-rust"] }
 secrecy = { version = "0.10", features = ["serde"] }
 rmcp = { version = "3.4", features = ["server", "transport-io", "macros"] }
 schemars = "1"
