@@ -1,13 +1,14 @@
 import { Theme } from "theme.slint";
 import { Sidebar } from "components/sidebar.slint";
 import { TabStrip } from "components/tabs.slint";
+import { Palette } from "components/palette.slint";
 import { QueryEditor } from "editor/query_editor.slint";
 import { Button } from "std-widgets.slint";
 import { ConnDialog } from "dialogs/connection.slint";
 import { Bridge } from "bridge.slint";
 
 // Re-export so Rust's include_modules! sees the generated types.
-export { ConnForm, TreeNode, TabItem, HighlightSpan, Bridge } from "bridge.slint";
+export { ConnForm, TreeNode, TabItem, HighlightSpan, CommandItem, Bridge } from "bridge.slint";
 
 export component MainWindow inherits Window {
     title: "Datara";
@@ -15,7 +16,6 @@ export component MainWindow inherits Window {
     preferred-height: 700px;
     background: Theme.bg;
 
-    property<bool> show-dialog: false;
     /// Sidebar width, dragged by the 4px handle between sidebar and editor.
     property<length> sidebar-width: 260px;
 
@@ -82,7 +82,7 @@ export component MainWindow inherits Window {
                         width: 100%;
                         height: 100%;
                         new-connection-requested => {
-                            root.show-dialog = true;
+                            Bridge.conn-dialog-visible = true;
                         }
                     }
                 }
@@ -175,13 +175,29 @@ export component MainWindow inherits Window {
         }
     }
 
+    // Palette overlay — drawn above everything; closed state keeps no
+    // instance so `init` re-focuses its LineEdit on every open.
+    if Bridge.palette-visible: Palette {
+        width: 100%;
+        height: 100%;
+    }
+
+    // Command palette open state, mirrored so close returns focus to the
+    // editor (the palette's LineEdit dies with it).
+    property<bool> palette-open: Bridge.palette-visible;
+    changed palette-open => {
+        if (!palette-open) {
+            editor.focus-editor();
+        }
+    }
+
     // Modal overlay — Slint 1.18's fluent style has no Dialog widget, so a
     // dimmed full-window overlay with a centered card plays that role.
-    if root.show-dialog: ConnDialog {
+    if Bridge.conn-dialog-visible: ConnDialog {
         width: 100%;
         height: 100%;
         close-requested => {
-            root.show-dialog = false;
+            Bridge.conn-dialog-visible = false;
         }
     }
 }

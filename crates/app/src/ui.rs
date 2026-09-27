@@ -11,13 +11,16 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use crate::bridge::{catalog_labels, push_tabs, push_tree, spans_model, AppEvent, UiCtx, UiHandle};
+use crate::bridge::{
+    catalog_labels, palette_model, push_tabs, push_tree, run_command, spans_model, AppEvent, UiCtx,
+    UiHandle,
+};
 use crate::commands;
 use crate::editor_ui::{line_col, line_count, EditorState};
 use crate::schema_tree::SchemaTree;
 use crate::services::AppServices;
 use crate::{Bridge, MainWindow};
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 /// Build the window, attach callbacks, load the initial sidebar list, run.
 pub fn run(services: AppServices) -> anyhow::Result<()> {
@@ -88,37 +91,24 @@ pub fn run(services: AppServices) -> anyhow::Result<()> {
     }
 
     {
-        let services = Rc::clone(&services);
-        let ui = ui.clone();
         let cx = Arc::clone(&cx);
         let weak = window.as_weak();
         bridge.on_toggle_node(move |id| {
-            let backend = services.backend.clone();
-            let ui = ui.clone();
-            let node = {
-                let Some(win) = weak.upgrade() else {
-                    return;
-                };
-                let bridge = win.global::<Bridge>();
+            let Some(win) = weak.upgrade() else {
+                return;
+            };
+            {
                 let mut tree = cx.tree.lock();
                 let Some(idx) = tree.find(id) else {
                     return;
                 };
                 if tree.visible()[idx].expanded {
                     tree.collapse(idx);
-                    push_tree(&bridge, &tree);
+                    push_tree(&win.global::<Bridge>(), &tree);
                     return;
                 }
-                let Some(node) = tree.expandable(idx).cloned() else {
-                    return; // leaf or placeholder: nothing to fetch
-                };
-                tree.expand_placeholder(idx);
-                push_tree(&bridge, &tree);
-                node
-            };
-            services.runtime.spawn(async move {
-                backend.expand_node(node, ui).await;
-            });
+            }
+            expand_tree_node(&win, &cx, id);
         });
     }
 
@@ -193,6 +183,54 @@ pub fn run(services: AppServices) -> anyhow::Result<()> {
                 return true;
             }
             false
+        });
+    }
+
+    // ── Schema filter + command palette (Task 4.5) ────────────────────
+
+    {
+        let cx = Arc::clone(&cx);
+        let weak = window.as_weak();
+        bridge.on_filter_tree(move |text| {
+            let Some(win) = weak.upgrade() else {
+                return;
+            };
+            let mut tree = cx.tree.lock();
+            tree.filter(&text);
+            push_tree(&win.global::<Bridge>(), &tree);
+        });
+    }
+
+    {
+        let cx = Arc::clone(&cx);
+        let weak = window.as_weak();
+        bridge.on_palette_edited(move |query| {
+            let Some(win) = weak.upgrade() else {
+                return;
+            };
+            let bridge = win.global::<Bridge>();
+            bridge.set_palette_items(palette_model(&cx.tree.lock(), &query));
+            bridge.set_palette_index(0);
+        });
+    }
+
+    {
+        let cx = Arc::clone(&cx);
+        let weak = window.as_weak();
+        bridge.on_palette_submit(move || {
+            let Some(win) = weak.upgrade() else {
+                return;
+            };
+            submit_palette(&win, &cx);
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        bridge.on_palette_close(move || {
+            if let Some(win) = weak.upgrade() {
+                win.global::<Bridge>().set_palette_visible(false);
+            }
         });
     }
 
@@ -323,6 +361,55 @@ pub fn run(services: AppServices) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Expand the tree row `id`: mark it expanded, splice the Loading row, and
+/// spawn the backend fetch. Shared by the sidebar's toggle and the
+/// palette's "Open connection: …" rows.
+fn expand_tree_node(win: &MainWindow, cx: &Arc<UiCtx>, id: i32) {
+    let node = {
+        let mut tree = cx.tree.lock();
+        let Some(idx) = tree.find(id) else {
+            return;
+        };
+        let Some(node) = tree.expandable(idx).cloned() else {
+            // Already expanded, leaf, or placeholder — nothing to fetch.
+            return;
+        };
+        tree.expand_placeholder(idx);
+        push_tree(&win.global::<Bridge>(), &tree);
+        node
+    };
+    let backend = Arc::clone(&cx.backend);
+    let ui = UiHandle::new(win, Arc::clone(cx));
+    cx.handle.spawn(async move {
+        backend.expand_node(node, ui).await;
+    });
+}
+
+/// Run the selected palette row, then close the palette. Tags: `connect`
+/// opens the connection dialog, `open-connection:<id>` expands that
+/// connection's tree row, anything else resolves via
+/// [`commands::command_by_tag`] into the normal `Command` path.
+fn submit_palette(win: &MainWindow, cx: &Arc<UiCtx>) {
+    let bridge = win.global::<Bridge>();
+    let items = bridge.get_palette_items();
+    let idx = bridge.get_palette_index().clamp(0, i32::MAX) as usize;
+    let tag = items.row_data(idx).map(|item| item.command.to_string());
+    bridge.set_palette_visible(false);
+    let Some(tag) = tag else {
+        return;
+    };
+    if tag == "connect" {
+        bridge.set_conn_dialog_visible(true);
+    } else if let Some(id) = tag
+        .strip_prefix("open-connection:")
+        .and_then(|s| s.parse::<i32>().ok())
+    {
+        expand_tree_node(win, cx, id);
+    } else if let Some(cmd) = commands::command_by_tag(&tag) {
+        run_command(win, cx, cmd);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Headless UI smoke: `Window::dispatch_event` produces the same
@@ -333,6 +420,7 @@ mod tests {
     //! overlay actually lands colored pixels in the editor area.
 
     use super::*;
+    use datara_domain::Command;
     use slint::platform::{Key, WindowEvent};
     use std::cell::RefCell;
 
@@ -340,6 +428,20 @@ mod tests {
         let text = text.into();
         win.dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
         win.dispatch_event(WindowEvent::KeyReleased { text });
+    }
+
+    /// Modifier press + key press + key release + modifier release — the
+    /// same sequence `ui_smoke_keys_and_overlay` uses for Ctrl+Return.
+    fn press_ctrl(win: &slint::Window, key: impl Into<slint::SharedString>) {
+        let key = key.into();
+        win.dispatch_event(WindowEvent::KeyPressed {
+            text: Key::Control.into(),
+        });
+        win.dispatch_event(WindowEvent::KeyPressed { text: key.clone() });
+        win.dispatch_event(WindowEvent::KeyReleased { text: key });
+        win.dispatch_event(WindowEvent::KeyReleased {
+            text: Key::Control.into(),
+        });
     }
 
     #[test]
@@ -359,16 +461,61 @@ mod tests {
         window.show().unwrap();
 
         let seen = Rc::new(RefCell::new(Vec::<(String, bool, bool, bool)>::new()));
+        let tree = Rc::new(RefCell::new(SchemaTree::default()));
         {
             let seen = Rc::clone(&seen);
+            let tree = Rc::clone(&tree);
+            let weak = window.as_weak();
             window
                 .global::<Bridge>()
                 .on_command(move |text, ctrl, shift, alt| {
                     let cmd =
                         commands::parse_command(&commands::key_string(&text, ctrl, shift, alt));
+                    if cmd == Some(Command::OpenPalette) {
+                        if let Some(win) = weak.upgrade() {
+                            crate::bridge::open_palette(&win.global::<Bridge>(), &tree.borrow());
+                        }
+                    }
                     seen.borrow_mut().push((text.to_string(), ctrl, shift, alt));
                     cmd.is_some()
                 });
+        }
+
+        // Palette callbacks, mirroring `run`'s wiring minus the UiCtx
+        // (submit records the tag instead of running the command).
+        let submitted = Rc::new(RefCell::new(Vec::<String>::new()));
+        {
+            let tree = Rc::clone(&tree);
+            let weak = window.as_weak();
+            window.global::<Bridge>().on_palette_edited(move |q| {
+                if let Some(win) = weak.upgrade() {
+                    let bridge = win.global::<Bridge>();
+                    bridge.set_palette_items(palette_model(&tree.borrow(), &q));
+                    bridge.set_palette_index(0);
+                }
+            });
+        }
+        {
+            let submitted = Rc::clone(&submitted);
+            let weak = window.as_weak();
+            window.global::<Bridge>().on_palette_submit(move || {
+                if let Some(win) = weak.upgrade() {
+                    let bridge = win.global::<Bridge>();
+                    let items = bridge.get_palette_items();
+                    if let Some(item) = items.row_data(bridge.get_palette_index().max(0) as usize) {
+                        submitted.borrow_mut().push(item.command.to_string());
+                    }
+                    bridge.set_palette_visible(false);
+                }
+            });
+        }
+        {
+            let weak = window.as_weak();
+            window.global::<Bridge>().on_palette_close(move || {
+                if let Some(win) = weak.upgrade() {
+                    win.global::<Bridge>().set_palette_visible(false);
+                }
+            });
         }
 
         let actions = Rc::new(RefCell::new(Vec::<String>::new()));
@@ -490,5 +637,35 @@ mod tests {
         let dir = std::path::Path::new("target/ui-smoke");
         std::fs::create_dir_all(dir).ok();
         std::fs::write(dir.join("ui-smoke-editor.ppm"), ppm).unwrap();
+
+        // ── Palette smoke (Task 4.5) ───────────────────────────────
+        // Ctrl+P opens the palette; typing fuzzy-filters; Return submits
+        // the top row; Escape closes.
+        press_ctrl(win, "p");
+        let bridge = window.global::<Bridge>();
+        assert!(bridge.get_palette_visible(), "Ctrl+P must open the palette");
+        assert_eq!(bridge.get_palette_items().row_count(), 11 + 1);
+
+        for ch in "exe".chars() {
+            press(win, ch.to_string());
+        }
+        assert_eq!(bridge.get_palette_query().as_str(), "exe");
+        let items = bridge.get_palette_items();
+        assert_eq!(
+            items.row_data(0).map(|i| i.command.to_string()).as_deref(),
+            Some("execute"),
+            "\"exe\" should rank \"Execute query\" first"
+        );
+        press(win, Key::Return);
+        assert_eq!(submitted.borrow().as_slice(), ["execute"]);
+        assert!(!bridge.get_palette_visible(), "submit closes the palette");
+
+        // Reopen — Escape dismisses without submitting.
+        press_ctrl(win, "p");
+        assert!(bridge.get_palette_visible());
+        assert_eq!(bridge.get_palette_query().as_str(), "");
+        press(win, Key::Escape);
+        assert!(!bridge.get_palette_visible(), "Escape closes the palette");
+        assert_eq!(submitted.borrow().len(), 1);
     }
 }

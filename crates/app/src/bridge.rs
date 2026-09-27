@@ -12,10 +12,11 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
+use crate::commands::{fuzzy, PALETTE_COMMANDS};
 use crate::editor_ui::{highlight_spans, line_count, resolve_sql, EditorState};
 use crate::schema_tree::{NodeKind, SchemaTree, TreeNode};
 use crate::services::{preview_sql, Backend};
-use crate::{Bridge, HighlightSpan, MainWindow, TabItem, TreeNode as SlintTreeNode};
+use crate::{Bridge, CommandItem, HighlightSpan, MainWindow, TabItem, TreeNode as SlintTreeNode};
 use datara_domain::{Command, ConnectionId, ConnectionProfile, QueryResult};
 use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 
@@ -213,7 +214,7 @@ fn apply(window: &MainWindow, cx: &Arc<UiCtx>, event: AppEvent) {
 }
 
 /// Execute one [`Command`] against current editor state.
-fn run_command(window: &MainWindow, cx: &Arc<UiCtx>, cmd: Command) {
+pub(crate) fn run_command(window: &MainWindow, cx: &Arc<UiCtx>, cmd: Command) {
     let bridge = window.global::<Bridge>();
     match cmd {
         Command::ExecuteQuery => {
@@ -290,14 +291,31 @@ fn run_command(window: &MainWindow, cx: &Arc<UiCtx>, cmd: Command) {
             }
         }
         Command::Search => {
-            bridge.set_schema_filter_visible(!bridge.get_schema_filter_visible());
+            if bridge.get_schema_filter_visible() {
+                // Hiding clears the filter so the sidebar comes back whole.
+                bridge.set_schema_filter_visible(false);
+                let mut tree = cx.tree.lock();
+                tree.filter("");
+                push_tree(&bridge, &tree);
+            } else {
+                bridge.set_schema_filter_visible(true);
+            }
         }
         Command::SaveQuery => bridge.set_status("Save query: not yet implemented".into()),
-        Command::OpenPalette => bridge.set_status("Palette: not yet implemented".into()),
+        Command::OpenPalette => open_palette(&bridge, &cx.tree.lock()),
         Command::Find => bridge.set_status("Find: not yet implemented".into()),
         Command::SearchHistory => bridge.set_status("History search: not yet implemented".into()),
-        // Mapped variants with no key binding in spec §20.
-        Command::OpenConnection | Command::RefreshSchema | Command::ToggleSidebar => {}
+        Command::RefreshSchema => {
+            let backend = Arc::clone(&cx.backend);
+            let ui = UiHandle::new(window, Arc::clone(cx));
+            cx.handle.spawn(async move {
+                backend.reload_connections(&ui).await;
+            });
+        }
+        // Mapped variants with no key binding in spec §20. OpenConnection
+        // never reaches here — the palette emits `open-connection:<id>`
+        // tags, not command names; ToggleSidebar has no sidebar state yet.
+        Command::OpenConnection | Command::ToggleSidebar => {}
     }
 }
 
@@ -320,24 +338,72 @@ pub(crate) fn spans_model(text: &str) -> ModelRc<HighlightSpan> {
     ModelRc::new(VecModel::from(highlight_spans(text)))
 }
 
-/// Rebuild the whole `Bridge.tree` model from `tree`.
+/// Rebuild the whole `Bridge.tree` model from `tree`, applying the stored
+/// sidebar filter ([`SchemaTree::view`]). While filtered, rows show the
+/// expanded chevron — they're a flat match list, not collapse state.
 ///
 /// ponytail: full `VecModel` snapshot per mutation — schema trees stay small
 /// (hundreds of rows); swap to `ModelNotify` row diffs if profiling bites.
 pub(crate) fn push_tree(bridge: &Bridge, tree: &SchemaTree) {
+    let filtering = tree.filtering();
     let rows: Vec<SlintTreeNode> = tree
-        .visible()
-        .iter()
+        .view()
+        .into_iter()
         .map(|n| SlintTreeNode {
             id: n.id,
             depth: i32::from(n.depth),
             kind: n.kind.as_str().into(),
             label: n.label.as_str().into(),
             has_children: n.has_children,
-            expanded: n.expanded,
+            expanded: n.expanded || filtering,
         })
         .collect();
     bridge.set_tree(ModelRc::new(VecModel::from(rows)));
+}
+
+/// Rebuild `Bridge.palette-items`: the static command table + `Connect…` +
+/// one `Open connection: <name>` row per visible connection root, fuzzy-
+/// filtered by `query` and sorted by match score.
+pub(crate) fn palette_model(tree: &SchemaTree, query: &str) -> ModelRc<CommandItem> {
+    let mut entries: Vec<(String, String)> = PALETTE_COMMANDS
+        .iter()
+        .map(|(tag, label, _)| ((*tag).to_owned(), (*label).to_owned()))
+        .collect();
+    entries.push(("connect".into(), "Connect…".into()));
+    entries.extend(
+        tree.visible()
+            .iter()
+            .filter(|n| n.kind == NodeKind::Connection)
+            .map(|n| {
+                (
+                    format!("open-connection:{}", n.id),
+                    format!("Open connection: {}", n.label),
+                )
+            }),
+    );
+    let mut scored: Vec<(i32, usize, String, String)> = entries
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, (tag, label))| fuzzy(query, &label).map(|s| (s, i, tag, label)))
+        .collect();
+    // Stable sort: score ties keep declaration order.
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let items: Vec<CommandItem> = scored
+        .into_iter()
+        .map(|(_, _, command, label)| CommandItem {
+            label: label.into(),
+            command: command.into(),
+        })
+        .collect();
+    ModelRc::new(VecModel::from(items))
+}
+
+/// Show the palette with a fresh query and the full item list.
+pub(crate) fn open_palette(bridge: &Bridge, tree: &SchemaTree) {
+    bridge.set_palette_query("".into());
+    bridge.set_palette_items(palette_model(tree, ""));
+    bridge.set_palette_index(0);
+    bridge.set_palette_visible(true);
 }
 
 /// Resolve `open-table(id)` to a [`AppEvent::PreviewSql`]: only Table/View

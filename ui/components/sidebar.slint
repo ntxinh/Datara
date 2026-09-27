@@ -53,11 +53,44 @@ export component Sidebar inherits Rectangle {
             }
         }
 
-        // Ctrl+K toggles this filter box (Task 4.2; actual filtering lands
-        // with the schema search task — for now it is the focus target).
-        if Bridge.schema-filter-visible: LineEdit {
+        // Ctrl+K toggles this filter box (Command::Search). `init` fires on
+        // conditional instantiation, so every Ctrl+K lands focus here;
+        // Escape clears + closes, Ctrl+K re-bubbles to the command router.
+        if Bridge.schema-filter-visible: filter-edit := LineEdit {
             height: 28px;
             placeholder-text: "Filter schema…";
+            init => {
+                self.focus();
+            }
+            edited => {
+                Bridge.filter-tree(self.text);
+            }
+            key-pressed(event) => {
+                if (event.text == Key.Escape) {
+                    Bridge.schema-filter-visible = false;
+                    Bridge.filter-tree("");
+                    return accept;
+                }
+                reject
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Theme.border;
+        }
+
+        if Bridge.schema-filter-visible && Bridge.tree.length == 0: Rectangle {
+            height: 22px;
+            Text {
+                x: 8px;
+                text: "No matches";
+                color: Theme.fg;
+                opacity: 0.5;
+                font-size: 12px;
+                font-italic: true;
+                vertical-alignment: center;
+            }
         }
 
         Rectangle {

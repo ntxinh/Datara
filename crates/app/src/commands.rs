@@ -78,6 +78,50 @@ pub fn parse_command(s: &str) -> Option<Command> {
     command_for(text, ctrl, shift, alt)
 }
 
+/// Static palette rows: (tag sent back via `Bridge.palette-submit`, label,
+/// resolved `Command`). Dynamic rows — `connect` (opens the dialog) and
+/// `open-connection:<node-id>` — are appended by `bridge::palette_model`.
+pub const PALETTE_COMMANDS: &[(&str, &str, Command)] = &[
+    ("execute", "Execute query", Command::ExecuteQuery),
+    ("new-query", "New query", Command::NewQuery),
+    ("save-query", "Save query", Command::SaveQuery),
+    ("search-schema", "Search schema", Command::Search),
+    ("open-palette", "Open command palette", Command::OpenPalette),
+    ("find", "Find", Command::Find),
+    ("search-history", "Search history", Command::SearchHistory),
+    ("next-tab", "Next tab", Command::NextTab),
+    ("close-tab", "Close tab", Command::CloseTab),
+    ("refresh-schema", "Refresh schema", Command::RefreshSchema),
+    ("toggle-sidebar", "Toggle sidebar", Command::ToggleSidebar),
+];
+
+/// Resolve a static palette tag to its `Command`.
+pub fn command_by_tag(tag: &str) -> Option<Command> {
+    PALETTE_COMMANDS
+        .iter()
+        .find(|(t, _, _)| *t == tag)
+        .map(|(_, _, c)| *c)
+}
+
+/// Case-insensitive subsequence match. `Some(score)` when every char of
+/// `needle` appears in `hay` in order — empty needle matches everything.
+/// Score rewards contiguity and early first match.
+///
+/// ponytail: no camel/prefix boosting beyond first-match position; swap in
+/// a real fuzzy scorer if ranking ever feels off.
+pub fn fuzzy(needle: &str, hay: &str) -> Option<i32> {
+    let needle: Vec<char> = needle.to_lowercase().chars().collect();
+    let hay: Vec<char> = hay.to_lowercase().chars().collect();
+    let mut pos = 0;
+    let mut score = 0;
+    for &n in &needle {
+        let i = hay[pos..].iter().position(|&h| h == n)? + pos;
+        score += if i == pos { 2 } else { 1 } - (i as i32 / 16);
+        pos = i + 1;
+    }
+    Some(score)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,5 +168,36 @@ mod tests {
     #[case::unmapped("ctrl+alt+q", None)]
     fn parses(#[case] s: &str, #[case] expected: Option<Command>) {
         assert_eq!(parse_command(s), expected);
+    }
+
+    #[rstest::rstest]
+    #[case::empty_matches_all("", "anything", true)]
+    #[case::exact("execute", "Execute query", true)]
+    #[case::subsequence("eq", "Execute query", true)]
+    #[case::case_insensitive("EXQ", "execute query", true)]
+    #[case::out_of_order("yq", "Execute query", false)]
+    #[case::missing_char("eqz", "Execute query", false)]
+    #[case::empty_hay("x", "", false)]
+    fn fuzzy_matches(#[case] needle: &str, #[case] hay: &str, #[case] expected: bool) {
+        assert_eq!(fuzzy(needle, hay).is_some(), expected);
+    }
+
+    #[test]
+    fn fuzzy_prefers_contiguous_and_early_matches() {
+        // "exe" contiguous beats "e..x..e" scattered.
+        assert!(fuzzy("exe", "execute") > fuzzy("exe", "example text"));
+        // Earlier first match beats later.
+        assert!(fuzzy("q", "query") > fuzzy("q", "aaa query"));
+    }
+
+    #[test]
+    fn palette_tags_resolve() {
+        assert_eq!(command_by_tag("execute"), Some(Command::ExecuteQuery));
+        assert_eq!(
+            command_by_tag("refresh-schema"),
+            Some(Command::RefreshSchema)
+        );
+        assert_eq!(command_by_tag("connect"), None);
+        assert_eq!(command_by_tag("bogus"), None);
     }
 }

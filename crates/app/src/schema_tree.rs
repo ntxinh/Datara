@@ -91,6 +91,9 @@ impl TreeNode {
 pub struct SchemaTree {
     nodes: Vec<TreeNode>,
     next_id: i32,
+    /// Lowercased filter from `Bridge.filter-tree` (Task 4.5); `""` when
+    /// the sidebar shows the whole tree.
+    filter: String,
 }
 
 impl SchemaTree {
@@ -188,8 +191,54 @@ impl SchemaTree {
     }
 
     /// All visible rows — the flat projection the UI renders.
+    ///
+    /// This is the *unfiltered* projection; the sidebar renders
+    /// [`SchemaTree::view`], which applies the filter. Node ids are looked
+    /// up in `nodes` regardless of filtering, so expand/collapse keeps
+    /// working while a filter is active.
     pub fn visible(&self) -> &[TreeNode] {
         &self.nodes
+    }
+
+    /// Store the sidebar filter text (lowercased here). Empty restores the
+    /// full tree — the filter never mutates `nodes`, only [`view`]'s output.
+    pub fn filter(&mut self, text: &str) {
+        self.filter = text.to_lowercase();
+    }
+
+    /// True while a non-empty filter is active.
+    pub fn filtering(&self) -> bool {
+        !self.filter.is_empty()
+    }
+
+    /// Rows the sidebar should show. Unfiltered → every row in `nodes`;
+    /// filtered → rows whose label contains the filter (case-insensitive)
+    /// plus every ancestor of a match so the path stays readable.
+    /// Descendants of a match are not force-included. Depth is preserved.
+    ///
+    /// ponytail: `lower.contains(needle)` substring, not fuzzy — the
+    /// palette owns fuzzy matching.
+    pub fn view(&self) -> Vec<&TreeNode> {
+        if self.filter.is_empty() {
+            return self.nodes.iter().collect();
+        }
+        let mut keep = vec![false; self.nodes.len()];
+        let mut ancestors: Vec<usize> = Vec::new();
+        for (i, n) in self.nodes.iter().enumerate() {
+            ancestors.truncate(n.depth as usize);
+            if n.label.to_lowercase().contains(&self.filter) {
+                keep[i] = true;
+                for &a in &ancestors {
+                    keep[a] = true;
+                }
+            }
+            ancestors.push(i);
+        }
+        self.nodes
+            .iter()
+            .zip(keep)
+            .filter_map(|(n, k)| k.then_some(n))
+            .collect()
     }
 
     fn fresh_id(&mut self) -> i32 {
@@ -359,5 +408,81 @@ mod tests {
         assert!(t.visible()[0].expanded);
         assert_eq!(t.visible()[1].depth, 1);
         assert_eq!(t.visible()[2].depth, 0);
+    }
+
+    /// prod ▸ app ▸ Tables ▸ dbo.users ▸ {id:int, email:nvarchar}
+    fn deep_tree() -> SchemaTree {
+        let mut t = tree();
+        t.expand_placeholder(0);
+        let conn = t.visible()[0].id;
+        t.replace_children(conn, vec![child(NodeKind::Database, "app")]);
+        t.expand_placeholder(1);
+        let db = t.visible()[1].id;
+        t.replace_children(
+            db,
+            vec![child(NodeKind::Folder(FolderKind::Tables), "Tables")],
+        );
+        t.expand_placeholder(2);
+        let folder = t.visible()[2].id;
+        t.replace_children(folder, vec![child(NodeKind::Table, "dbo.users")]);
+        t.expand_placeholder(3);
+        let table = t.visible()[3].id;
+        t.replace_children(
+            table,
+            vec![
+                child(NodeKind::Column, "id: int"),
+                child(NodeKind::Column, "email: nvarchar"),
+            ],
+        );
+        t
+    }
+
+    fn view_labels(t: &SchemaTree) -> Vec<&str> {
+        t.view().iter().map(|n| n.label.as_str()).collect()
+    }
+
+    #[test]
+    fn filter_keeps_ancestors_of_deep_match() {
+        let mut t = deep_tree();
+        t.filter("email");
+        assert_eq!(
+            view_labels(&t),
+            ["prod", "app", "Tables", "dbo.users", "email: nvarchar"]
+        );
+        let depths: Vec<_> = t.view().iter().map(|n| n.depth).collect();
+        assert_eq!(depths, [0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn filter_on_ancestor_excludes_descendants_and_siblings() {
+        let mut t = deep_tree();
+        t.filter("USERS"); // case-insensitive
+        assert_eq!(view_labels(&t), ["prod", "app", "Tables", "dbo.users"]);
+    }
+
+    #[test]
+    fn filter_empty_restores_full_tree() {
+        let mut t = deep_tree();
+        t.filter("email");
+        t.filter("");
+        assert_eq!(t.view().len(), t.visible().len());
+        assert!(!t.filtering());
+    }
+
+    #[test]
+    fn filter_no_match_is_empty() {
+        let mut t = deep_tree();
+        t.filter("zzz");
+        assert!(t.view().is_empty());
+        assert!(t.filtering());
+    }
+
+    #[test]
+    fn ids_stay_lookupable_while_filtered() {
+        let mut t = deep_tree();
+        let col_id = t.visible()[5].id;
+        t.filter("email");
+        // The match is the last visible row; find() resolves by id anyway.
+        assert_eq!(t.find(col_id), Some(5));
     }
 }

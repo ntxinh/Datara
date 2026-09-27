@@ -40,6 +40,14 @@ export struct HighlightSpan {
     col: int,
 }
 
+/// One row in the command palette (Task 4.5). `command` is the palette tag
+/// `Bridge.palette-submit` hands to Rust — either a `PALETTE_COMMANDS` tag,
+/// `connect`, or `open-connection:<tree-node-id>`.
+export struct CommandItem {
+    label: string,
+    command: string,
+}
+
 /// Slint ↔ Tokio bridge. Callbacks fire on the UI thread and spawn work on
 /// the Tokio runtime; `in` properties are pushed back via
 /// `invoke_from_event_loop` (see bridge.rs). Grows in later tasks.
@@ -74,6 +82,29 @@ export global Bridge {
     in property<string> results-text;
     /// Ctrl+K toggles the schema filter LineEdit over the sidebar.
     in-out property<bool> schema-filter-visible;
+    /// Filter string applied to the schema tree (the sidebar LineEdit's
+    /// `edited` signal calls this on every keystroke). Empty restores the
+    /// full tree.
+    callback filter-tree(string);
+
+    // ── Command palette (Task 4.5) ──────────────────────────────────
+    in-out property<bool> palette-visible;
+    /// Palette LineEdit text; two-way so Rust can reset it on open.
+    in-out property<string> palette-query;
+    /// Fuzzy-filtered rows for the palette ListView; Rust rebuilds on
+    /// every `palette-edited`.
+    in property<[CommandItem]> palette-items;
+    /// Selected row — arrows in the palette LineEdit drive this.
+    in-out property<int> palette-index;
+    /// Palette query text changed; Rust refilters `palette-items`.
+    callback palette-edited(string);
+    /// Enter (or a row click): run `palette-items[palette-index].command`.
+    callback palette-submit();
+    /// Escape / click on the dim.
+    callback palette-close();
+    /// The "New connection" dialog. Rust sets it for the palette's
+    /// "Connect…" item; Slint writes false on close.
+    in-out property<bool> conn-dialog-visible;
 
     /// Current completion candidates; non-empty shows the popup.
     in property<[string]> completions;
