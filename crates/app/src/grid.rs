@@ -23,10 +23,6 @@ pub struct GridState {
     cache: Option<RowCache>,
     widths: Vec<i32>,
     sel: Option<CellSelection>,
-    /// Clipboard is created lazily — `arboard::Clipboard` on Wayland owns
-    /// the data-control object that keeps copied text alive past the
-    /// call, so it must live as long as the app.
-    clipboard: Option<arboard::Clipboard>,
 }
 
 impl GridState {
@@ -145,7 +141,8 @@ impl GridState {
     }
 
     /// Ctrl+C: copy the selection rectangle as TSV to the system clipboard.
-    pub fn copy(&mut self, bridge: &Bridge) {
+    /// `clipboard` is the app-lifetimes holder in `UiCtx` (created lazily).
+    pub fn copy(&mut self, clipboard: &mut Option<arboard::Clipboard>, bridge: &Bridge) {
         let (Some(cache), Some(sel)) = (&self.cache, self.sel) else {
             return;
         };
@@ -160,13 +157,33 @@ impl GridState {
             .min(cache.row_count().saturating_sub(r0))
             * c1.saturating_sub(c0)
                 .min(cache.column_count().saturating_sub(c0));
-        if self.clipboard.is_none() {
-            self.clipboard = arboard::Clipboard::new().ok();
+        if Self::copy_to_clipboard(clipboard, bridge, tsv).is_some() {
+            bridge.set_status(format!("Copied {n} cells").into());
         }
-        match self.clipboard.as_mut().map(|c| c.set_text(tsv)) {
-            Some(Ok(())) => bridge.set_status(format!("Copied {n} cells").into()),
-            Some(Err(e)) => bridge.set_status(format!("Copy failed: {e}").into()),
-            None => bridge.set_status("Copy failed: no clipboard provider".into()),
+    }
+
+    /// Copy `text` to the system clipboard, reporting failures on the status
+    /// line. `slot` lazily holds the `arboard::Clipboard` — on Wayland it owns
+    /// the data-control object that keeps copied text alive past this call,
+    /// so the holder must live as long as the app. `Some` on success.
+    pub(crate) fn copy_to_clipboard(
+        slot: &mut Option<arboard::Clipboard>,
+        bridge: &Bridge,
+        text: String,
+    ) -> Option<()> {
+        if slot.is_none() {
+            *slot = arboard::Clipboard::new().ok();
+        }
+        match slot.as_mut().map(|c| c.set_text(text)) {
+            Some(Ok(())) => Some(()),
+            Some(Err(e)) => {
+                bridge.set_status(format!("Copy failed: {e}").into());
+                None
+            }
+            None => {
+                bridge.set_status("Copy failed: no clipboard provider".into());
+                None
+            }
         }
     }
 

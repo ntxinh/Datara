@@ -17,7 +17,9 @@ use crate::editor_ui::{highlight_spans, line_count, resolve_sql, EditorState};
 use crate::grid::GridState;
 use crate::schema_tree::{NodeKind, SchemaTree, TreeNode};
 use crate::services::{preview_sql, Backend};
-use crate::{Bridge, CommandItem, HighlightSpan, MainWindow, TabItem, TreeNode as SlintTreeNode};
+use crate::{
+    Bridge, CommandItem, HighlightSpan, HistoryItem, MainWindow, TabItem, TreeNode as SlintTreeNode,
+};
 use datara_domain::{Command, ConnectionId, ConnectionProfile, QueryResult};
 use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 
@@ -34,10 +36,11 @@ pub enum AppEvent {
         parent_id: i32,
         result: Result<Vec<TreeNode>, String>,
     },
-    /// `open-table` resolved a row to its preview SELECT — opens a tab.
+    /// A table preview or history rerun: open a tab carrying `sql` bound
+    /// to `conn_id`/`database`, then execute it.
     PreviewSql {
         conn_id: ConnectionId,
-        database: String,
+        database: Option<String>,
         sql: String,
         label: String,
     },
@@ -71,6 +74,11 @@ pub enum AppEvent {
         #[allow(dead_code)]
         tab: i32,
     },
+    /// `history-search`/`history-delete` finished — swap the panel model.
+    HistoryLoaded(Vec<HistoryItem>),
+    /// `history-copy` resolved the entry — copy its full query text on the
+    /// UI thread (clipboard lives in `UiCtx`).
+    CopyHistoryText(String),
 }
 
 /// Everything `apply` needs on the UI thread. Shared between `UiHandle`
@@ -86,6 +94,10 @@ pub struct UiCtx {
     pub handle: tokio::runtime::Handle,
     /// `[query] default_limit` from config.
     pub query_limit: u32,
+    /// Shared clipboard — lazily created; on Wayland the `Clipboard` owns
+    /// the data-control object that keeps copied text alive, so it must
+    /// live as long as the app (used by the grid and history copy).
+    pub clipboard: Mutex<Option<arboard::Clipboard>>,
 }
 
 /// Weak handle to the window, safe to move into Tokio tasks.
@@ -167,7 +179,7 @@ pub(crate) fn apply(window: &MainWindow, cx: &Arc<UiCtx>, event: AppEvent) {
             // (which re-locks via run_command) can't recurse on it.
             {
                 let mut editor = cx.editor.lock();
-                editor.open_sql_tab(label, sql.clone(), Some(conn_id), Some(database));
+                editor.open_sql_tab(label, sql.clone(), Some(conn_id), database);
                 push_tabs(&bridge, &editor);
                 let jump = editor.cursor_jump(sql.len());
                 bridge.set_editor_text(sql.clone().into());
@@ -205,17 +217,54 @@ pub(crate) fn apply(window: &MainWindow, cx: &Arc<UiCtx>, event: AppEvent) {
             };
             bridge.set_status(status.into());
             cx.grid.lock().set_result(&bridge, result, info);
+            refresh_history(window, cx);
         }
         AppEvent::QueryError { message, .. } => {
             bridge.set_query_running(cx.backend.any_running());
             bridge.set_status(message.clone().into());
             cx.grid.lock().clear(&bridge, &format!("Error: {message}"));
+            refresh_history(window, cx);
         }
         AppEvent::QueryCancelled { .. } => {
             bridge.set_query_running(cx.backend.any_running());
             bridge.set_status("Cancelled".into());
             cx.grid.lock().clear(&bridge, "Query cancelled");
         }
+
+        AppEvent::HistoryLoaded(items) => {
+            bridge.set_history_items(ModelRc::new(VecModel::from(items)));
+        }
+        AppEvent::CopyHistoryText(text) => {
+            GridState::copy_to_clipboard(&mut cx.clipboard.lock(), &bridge, text);
+        }
+    }
+}
+
+/// Auto-refresh (Task 6.1): after a query completes, its history row just
+/// landed in storage — re-run the panel's search when it's open.
+fn refresh_history(window: &MainWindow, cx: &Arc<UiCtx>) {
+    let bridge = window.global::<Bridge>();
+    if !bridge.get_history_visible() {
+        return;
+    }
+    let conn_id = cx.editor.lock().active_tab().conn_id;
+    let filter = bridge.get_history_query().to_string();
+    let backend = Arc::clone(&cx.backend);
+    let ui = UiHandle::new(window, Arc::clone(cx));
+    cx.handle.spawn(async move {
+        backend.history_search(conn_id, &filter, ui).await;
+    });
+}
+
+/// Ctrl+Shift+F / toolbar button: show or hide the history panel. Opening
+/// runs the first search with the current filter; closing hands focus
+/// back to the editor via the .slint watcher.
+pub(crate) fn toggle_history(window: &MainWindow, cx: &Arc<UiCtx>) {
+    let bridge = window.global::<Bridge>();
+    let open = !bridge.get_history_visible();
+    bridge.set_history_visible(open);
+    if open {
+        refresh_history(window, cx);
     }
 }
 
@@ -310,7 +359,7 @@ pub(crate) fn run_command(window: &MainWindow, cx: &Arc<UiCtx>, cmd: Command) {
         Command::SaveQuery => bridge.set_status("Save query: not yet implemented".into()),
         Command::OpenPalette => open_palette(&bridge, &cx.tree.lock()),
         Command::Find => bridge.set_status("Find: not yet implemented".into()),
-        Command::SearchHistory => bridge.set_status("History search: not yet implemented".into()),
+        Command::SearchHistory => toggle_history(window, cx),
         Command::RefreshSchema => {
             let backend = Arc::clone(&cx.backend);
             let ui = UiHandle::new(window, Arc::clone(cx));
@@ -428,7 +477,7 @@ pub(crate) fn open_table_event(tree: &SchemaTree, id: i32, limit: u32) -> Option
     );
     Some(AppEvent::PreviewSql {
         conn_id,
-        database,
+        database: Some(database),
         sql: preview_sql(&schema, &table, limit),
         label: format!("{schema}.{table}"),
     })
@@ -494,7 +543,10 @@ mod tests {
             panic!("expected PreviewSql");
         };
         assert_eq!(conn_id, ConnectionId(7));
-        assert_eq!((database, label), ("master".into(), "dbo.users".into()));
+        assert_eq!(
+            (database, label),
+            (Some("master".into()), "dbo.users".into())
+        );
         assert_eq!(sql, "SELECT TOP 250 * FROM [dbo].[users]");
     }
 }

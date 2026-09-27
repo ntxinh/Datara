@@ -7,10 +7,11 @@ import { Button } from "std-widgets.slint";
 import { ConnDialog } from "dialogs/connection.slint";
 import { Bridge } from "bridge.slint";
 import { ResultGrid } from "grid/result_grid.slint";
+import { HistoryPanel } from "pages/history.slint";
 
 // Re-export so Rust's include_modules! sees the generated types.
 export { ConnForm, TreeNode, TabItem, HighlightSpan, CommandItem,
-         GridCol, GridCell, GridRow, GridSel, Bridge } from "bridge.slint";
+         GridCol, GridCell, GridRow, GridSel, HistoryItem, Bridge } from "bridge.slint";
 
 export component MainWindow inherits Window {
     title: "Datara";
@@ -66,6 +67,12 @@ export component MainWindow inherits Window {
                         text: "Stop";
                         clicked => {
                             Bridge.cancel-query();
+                        }
+                    }
+                    Button {
+                        text: "History";
+                        clicked => {
+                            Bridge.history-toggle();
                         }
                     }
                 }
@@ -124,7 +131,12 @@ export component MainWindow inherits Window {
                     ResultGrid {
                         vertical-stretch: 1;
                     }
-                }
+                    // Query-history bottom pane (Task 6.1) — sits between
+                    // the result grid and the status bar.
+                    if Bridge.history-visible: HistoryPanel {
+                        // fixed height declared by the component
+                    }
+                    }
             }
 
             Rectangle { height: 1px; background: Theme.border; }
@@ -170,6 +182,16 @@ export component MainWindow inherits Window {
     property<bool> palette-open: Bridge.palette-visible;
     changed palette-open => {
         if (!palette-open) {
+            editor.focus-editor();
+        }
+    }
+    // Focus-back watcher: Escape in the panel writes history-visible
+    // directly (no Rust round-trip) — closing returns focus to the editor.
+    // Open-search lives in Rust (`history-toggle`); watchers aren't
+    // reliable enough to own it.
+    property<bool> history-open: Bridge.history-visible;
+    changed history-open => {
+        if (!history-open) {
             editor.focus-editor();
         }
     }

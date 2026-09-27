@@ -1,0 +1,136 @@
+import { Theme } from "../theme.slint";
+import { Bridge } from "../bridge.slint";
+import { LineEdit, ListView } from "std-widgets.slint";
+
+/// Small text button used for the per-row actions — the standard `Button`
+/// is too heavy for a 22px grid-style row.
+component RowBtn inherits Rectangle {
+    in property<string> label;
+    callback clicked();
+    width: label-t.preferred-width + 14px;
+    border-radius: 3px;
+    border-width: 1px;
+    border-color: Theme.border;
+    background: ta.pressed ? Theme.border
+        : ta.has-hover ? Theme.border.with-alpha(0.5) : transparent;
+    label-t := Text {
+        text: root.label;
+        color: Theme.fg;
+        font-size: 10px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+/// Query-history bottom pane (Task 6.1): a filter LineEdit over a ListView
+/// of `Bridge.history-items`, each row with Rerun/Copy/Delete. Search runs
+/// on every keystroke — the LIKE query is cheap over a bounded table.
+export component HistoryPanel inherits Rectangle {
+    background: Theme.panel;
+    height: 220px;
+
+    VerticalLayout {
+        padding: 6px;
+        spacing: 4px;
+
+        search := LineEdit {
+            height: 26px;
+            placeholder-text: "Filter history…";
+            text <=> Bridge.history-query;
+            init => {
+                self.focus();
+            }
+            edited => {
+                Bridge.history-search(self.text);
+            }
+            key-pressed(event) => {
+                if (event.text == Key.Escape) {
+                    Bridge.history-visible = false;
+                    return accept;
+                }
+                reject
+            }
+        }
+
+        if Bridge.history-items.length == 0: Rectangle {
+            vertical-stretch: 1;
+            Text {
+                text: "No history";
+                color: Theme.fg;
+                opacity: 0.5;
+                font-size: 12px;
+                font-italic: true;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        if Bridge.history-items.length > 0: ListView {
+            vertical-stretch: 1;
+            for item in Bridge.history-items: Rectangle {
+                height: 26px;
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 8px;
+
+                    Text {
+                        text: item.ok ? "✓" : "✗";
+                        color: item.ok ? #a6e3a1 : #f38ba8;
+                        font-size: 11px;
+                        width: 14px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: item.started-at;
+                        color: Theme.fg;
+                        opacity: 0.6;
+                        font-size: 11px;
+                        width: 118px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        horizontal-stretch: 1;
+                        text: item.query;
+                        color: Theme.fg;
+                        font-family: "monospace";
+                        font-size: 11px;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: item.duration;
+                        color: Theme.fg;
+                        opacity: 0.6;
+                        font-size: 11px;
+                        width: 52px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: item.rows;
+                        color: Theme.fg;
+                        opacity: 0.6;
+                        font-size: 11px;
+                        width: 64px;
+                        vertical-alignment: center;
+                    }
+                    RowBtn {
+                        label: "Rerun";
+                        clicked => { Bridge.history-rerun(item.id); }
+                    }
+                    RowBtn {
+                        label: "Copy";
+                        clicked => { Bridge.history-copy(item.id); }
+                    }
+                    RowBtn {
+                        label: "Delete";
+                        clicked => { Bridge.history-delete(item.id); }
+                    }
+                }
+            }
+        }
+    }
+}

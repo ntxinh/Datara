@@ -75,6 +75,18 @@ export struct GridSel {
     active: bool,
 }
 
+/// One row in the query-history panel (Task 6.1). `query` is the first
+/// line of the recorded text, capped at 80 chars by Rust.
+export struct HistoryItem {
+    id: int,
+    query: string,
+    started-at: string,
+    duration: string,
+    rows: string,
+    ok: bool,
+}
+
+
 
 /// Slint ↔ Tokio bridge. Callbacks fire on the UI thread and spawn work on
 /// the Tokio runtime; `in` properties are pushed back via
@@ -160,6 +172,25 @@ export global Bridge {
     /// Header clicked: toggle-sort that column.
     callback sort-column(idx: int);
 
+    // ── Query history (Task 6.1) ─────────────────────────────────────
+    /// Bottom-pane panel visibility (Ctrl+Shift+F / History button).
+    in-out property<bool> history-visible;
+    /// Panel rows, newest first — pushed by Rust on search/open/refresh.
+    in property<[HistoryItem]> history-items;
+    /// Two-way bound to the panel's filter LineEdit so Rust-side
+    /// refreshes (delete, auto-refresh after execute) reuse the filter.
+    in-out property<string> history-query;
+    /// Filter text changed; Rust re-runs the search.
+    callback history-search(string);
+    /// Load the entry's query into a new tab and execute it.
+    callback history-rerun(int);
+    /// Copy the entry's full query text to the clipboard.
+    callback history-copy(int);
+    /// Delete the entry, then refresh the list.
+    callback history-delete(int);
+    /// Ctrl+Shift+F / History button: toggle the panel (Rust owns the
+    /// open-search refresh — `changed` watchers aren't reliable here).
+    callback history-toggle();
     /// Current completion candidates; non-empty shows the popup.
     in property<[string]> completions;
     /// Selected row in the completion popup. In-out so the popup's own

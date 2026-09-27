@@ -518,6 +518,7 @@ mod tests {
             backend: Arc::clone(&svc.backend),
             handle: svc.runtime.handle().clone(),
             query_limit: svc.config.query.default_limit,
+            clipboard: Mutex::new(None),
         }))
     }
 

@@ -21,6 +21,7 @@ datara-driver-mssql.workspace = true
 datara-secrets.workspace = true
 datara-sql-editor.workspace = true
 secrecy.workspace = true
+jiff.workspace = true
 datara-storage.workspace = true
 tokio.workspace = true
 parking_lot.workspace = true
@@ -28,6 +29,7 @@ arboard = { version = "3", default-features = false }
 
 [dev-dependencies]
 rstest.workspace = true
+tempfile.workspace = true
 i-slint-backend-testing.workspace = true
 
 [build-dependencies]

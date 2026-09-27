@@ -33,6 +33,7 @@ pub fn run(services: AppServices) -> anyhow::Result<()> {
         backend: Arc::clone(&services.backend),
         handle: services.runtime.handle().clone(),
         query_limit: services.config.query.default_limit,
+        clipboard: Mutex::new(None),
     });
     let ui = UiHandle::new(&window, Arc::clone(&cx));
     let services = Rc::new(services);
@@ -383,7 +384,9 @@ pub fn run(services: AppServices) -> anyhow::Result<()> {
         let weak = window.as_weak();
         bridge.on_copy_selection(move || {
             let Some(win) = weak.upgrade() else { return };
-            cx.grid.lock().copy(&win.global::<Bridge>());
+            cx.grid
+                .lock()
+                .copy(&mut cx.clipboard.lock(), &win.global::<Bridge>());
         });
     }
 
@@ -402,6 +405,74 @@ pub fn run(services: AppServices) -> anyhow::Result<()> {
         bridge.on_sort_column(move |idx| {
             let Some(win) = weak.upgrade() else { return };
             cx.grid.lock().sort(&win.global::<Bridge>(), idx);
+        });
+    }
+
+    // ── Query history (Task 6.1) ─────────────────────────────────────
+
+    {
+        let cx = Arc::clone(&cx);
+        let weak = window.as_weak();
+        bridge.on_history_search(move |filter| {
+            let Some(win) = weak.upgrade() else { return };
+            let conn_id = cx.editor.lock().active_tab().conn_id;
+            let backend = Arc::clone(&cx.backend);
+            let ui = UiHandle::new(&win, Arc::clone(&cx));
+            cx.handle.spawn(async move {
+                backend.history_search(conn_id, &filter, ui).await;
+            });
+        });
+    }
+
+    {
+        let cx = Arc::clone(&cx);
+        let weak = window.as_weak();
+        bridge.on_history_rerun(move |id| {
+            let Some(win) = weak.upgrade() else { return };
+            let backend = Arc::clone(&cx.backend);
+            let ui = UiHandle::new(&win, Arc::clone(&cx));
+            cx.handle.spawn(async move {
+                backend.history_rerun(i64::from(id), ui).await;
+            });
+        });
+    }
+
+    {
+        let cx = Arc::clone(&cx);
+        let weak = window.as_weak();
+        bridge.on_history_copy(move |id| {
+            let Some(win) = weak.upgrade() else { return };
+            let backend = Arc::clone(&cx.backend);
+            let ui = UiHandle::new(&win, Arc::clone(&cx));
+            cx.handle.spawn(async move {
+                backend.history_copy(i64::from(id), ui).await;
+            });
+        });
+    }
+
+    {
+        let cx = Arc::clone(&cx);
+        let weak = window.as_weak();
+        bridge.on_history_delete(move |id| {
+            let Some(win) = weak.upgrade() else { return };
+            let conn_id = cx.editor.lock().active_tab().conn_id;
+            let filter = win.global::<Bridge>().get_history_query().to_string();
+            let backend = Arc::clone(&cx.backend);
+            let ui = UiHandle::new(&win, Arc::clone(&cx));
+            cx.handle.spawn(async move {
+                backend
+                    .history_delete(i64::from(id), conn_id, &filter, ui)
+                    .await;
+            });
+        });
+    }
+
+    {
+        let cx = Arc::clone(&cx);
+        let weak = window.as_weak();
+        bridge.on_history_toggle(move || {
+            let Some(win) = weak.upgrade() else { return };
+            crate::bridge::toggle_history(&win, &cx);
         });
     }
     window.run()?;
@@ -767,10 +838,12 @@ mod tests {
             let grid = Rc::clone(&grid);
             let weak = window.as_weak();
             let copied = Rc::clone(&copied);
+            let clip = Rc::new(RefCell::new(None));
             bridge.on_copy_selection(move || {
                 copied.set(true);
                 if let Some(win) = weak.upgrade() {
-                    grid.borrow_mut().copy(&win.global::<Bridge>());
+                    grid.borrow_mut()
+                        .copy(&mut clip.borrow_mut(), &win.global::<Bridge>());
                 }
             });
         }
@@ -984,6 +1057,46 @@ mod tests {
         assert_eq!(bridge.get_rows().row_count(), 0);
         assert_eq!(bridge.get_columns().row_count(), 0);
         assert_eq!(bridge.get_result_info().as_str(), "Running…");
+
+        // ── History panel smoke (Task 6.1) ─────────────────────────
+        // history-toggle (toolbar/Ctrl+Shift+F entry) flips visibility and
+        // fires the open search; the pushed model lands on
+        // Bridge.history-items.
+        let searches = Rc::new(RefCell::new(Vec::<String>::new()));
+        {
+            let searches = Rc::clone(&searches);
+            bridge.on_history_search(move |f| searches.borrow_mut().push(f.to_string()));
+        }
+        {
+            // Same shape as run()'s on_history_toggle, minus UiCtx.
+            let weak = window.as_weak();
+            bridge.on_history_toggle(move || {
+                if let Some(win) = weak.upgrade() {
+                    let b = win.global::<Bridge>();
+                    let open = !b.get_history_visible();
+                    b.set_history_visible(open);
+                    if open {
+                        b.invoke_history_search(b.get_history_query());
+                    }
+                }
+            });
+        }
+        bridge.invoke_history_toggle();
+        assert!(bridge.get_history_visible());
+        assert_eq!(searches.borrow().as_slice(), [""]);
+        bridge.set_history_items(ModelRc::new(VecModel::from(vec![crate::HistoryItem {
+            id: 1,
+            query: "select 1".into(),
+            started_at: "2026-09-28 10:00".into(),
+            duration: "12ms".into(),
+            rows: "1 rows".into(),
+            ok: true,
+        }])));
+        let items = bridge.get_history_items();
+        assert_eq!(items.row_count(), 1);
+        assert_eq!(items.row_data(0).unwrap().query.as_str(), "select 1");
+        bridge.invoke_history_toggle();
+        assert!(!bridge.get_history_visible());
     }
 
     /// Live Task 5.3 smoke: `AppEvent::PreviewSql` — what double-clicking a
@@ -1044,6 +1157,7 @@ mod tests {
             backend: Arc::clone(&svc.backend),
             handle: svc.runtime.handle().clone(),
             query_limit: svc.config.query.default_limit,
+            clipboard: Mutex::new(None),
         });
         let window = MainWindow::new().unwrap();
         let bridge = window.global::<Bridge>();
@@ -1054,7 +1168,7 @@ mod tests {
             &cx,
             AppEvent::PreviewSql {
                 conn_id: id,
-                database: "master".into(),
+                database: Some("master".into()),
                 sql: crate::services::preview_sql("sys", "tables", 5),
                 label: "sys.tables".into(),
             },

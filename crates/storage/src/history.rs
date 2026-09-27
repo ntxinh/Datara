@@ -59,6 +59,19 @@ impl<'a> HistoryRepo<'a> {
         rows.into_iter().map(HistoryRow::into_entry).collect()
     }
 
+    /// Fetch one history row by id — None when it doesn't exist.
+    pub async fn get(&self, id: i64) -> Result<Option<QueryHistoryEntry>> {
+        let row = sqlx::query_as::<_, HistoryRow>(
+            "SELECT id, connection_id, database, query, started_at, duration_ms, \
+             row_count, success, error_message FROM query_history WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(self.storage.pool())
+        .await
+        .map_err(storage_err)?;
+        row.map(HistoryRow::into_entry).transpose()
+    }
+
     /// Delete one history row by id.
     pub async fn delete(&self, id: i64) -> Result<()> {
         sqlx::query("DELETE FROM query_history WHERE id = ?")
