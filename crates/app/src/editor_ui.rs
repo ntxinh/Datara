@@ -87,9 +87,19 @@ impl EditorState {
         self.anchor = anchor;
     }
 
+    /// Save the live caret into the outgoing tab — caret moves don't go
+    /// through `stash`, so every activation change must do this or the
+    /// position is lost.
+    fn stash_cursor(&mut self) {
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            tab.cursor = self.cursor;
+        }
+    }
+
     /// Open a blank "Query N" tab and make it active.
     pub fn new_tab(&mut self) -> i32 {
         self.untitled += 1;
+        self.stash_cursor();
         let id = self.fresh_id();
         self.tabs.push(EditorTab {
             id,
@@ -101,6 +111,8 @@ impl EditorState {
         });
         self.active = self.tabs.len() - 1;
         self.completions.clear();
+        self.cursor = 0;
+        self.anchor = 0;
         id
     }
 
@@ -113,6 +125,7 @@ impl EditorState {
         conn_id: Option<ConnectionId>,
         database: Option<String>,
     ) -> i32 {
+        self.stash_cursor();
         let id = self.fresh_id();
         self.tabs.push(EditorTab {
             id,
@@ -124,6 +137,8 @@ impl EditorState {
         });
         self.active = self.tabs.len() - 1;
         self.completions.clear();
+        self.cursor = 0;
+        self.anchor = 0;
         id
     }
 
@@ -139,9 +154,13 @@ impl EditorState {
     /// cursor)` of the incoming tab for the UI to load. Unknown id → None.
     pub fn switch(&mut self, id: i32, outgoing_text: String) -> Option<(String, usize)> {
         let idx = self.tabs.iter().position(|t| t.id == id)?;
-        self.tabs[self.active].text = outgoing_text;
+        let out = &mut self.tabs[self.active];
+        out.text = outgoing_text;
+        out.cursor = self.cursor;
         self.active = idx;
         self.completions.clear();
+        self.cursor = self.tabs[idx].cursor.min(self.tabs[idx].text.len());
+        self.anchor = self.cursor;
         let tab = &self.tabs[idx];
         Some((tab.text.clone(), tab.cursor))
     }
@@ -151,7 +170,9 @@ impl EditorState {
     /// last tab opens a fresh "Query N" so `active` is never invalid.
     pub fn close(&mut self, id: i32, outgoing_text: String) -> Option<(String, usize)> {
         let idx = self.tabs.iter().position(|t| t.id == id)?;
-        self.tabs[self.active].text = outgoing_text;
+        let out = &mut self.tabs[self.active];
+        out.text = outgoing_text;
+        out.cursor = self.cursor;
         self.tabs.remove(idx);
         if self.tabs.is_empty() {
             self.new_tab();
@@ -161,6 +182,8 @@ impl EditorState {
             self.active -= 1;
         }
         self.completions.clear();
+        self.cursor = self.active_tab().cursor.min(self.active_tab().text.len());
+        self.anchor = self.cursor;
         let tab = self.active_tab();
         Some((tab.text.clone(), tab.cursor))
     }
@@ -171,9 +194,13 @@ impl EditorState {
         if self.tabs.len() < 2 {
             return None;
         }
-        self.tabs[self.active].text = outgoing_text;
+        let out = &mut self.tabs[self.active];
+        out.text = outgoing_text;
+        out.cursor = self.cursor;
         self.active = (self.active + 1) % self.tabs.len();
         self.completions.clear();
+        self.cursor = self.active_tab().cursor.min(self.active_tab().text.len());
+        self.anchor = self.cursor;
         let tab = self.active_tab();
         Some((tab.id, tab.text.clone(), tab.cursor))
     }
@@ -369,6 +396,19 @@ mod tests {
         let (text, _) = s.close(only, "x".into()).unwrap();
         assert_eq!(s.tabs.len(), 1);
         assert_eq!(text, "");
+    }
+
+    #[test]
+    fn switch_restores_caret() {
+        let mut s = state();
+        let first = s.active_tab().id;
+        s.stash("SELECT 1".into(), 0);
+        // Caret moved without editing, then switch away and back.
+        s.set_caret(4, 4);
+        s.new_tab();
+        let (_, cursor) = s.switch(first, "".into()).unwrap();
+        assert_eq!(cursor, 4, "caret must round-trip through the tab");
+        assert_eq!(s.cursor, 4);
     }
 
     #[test]

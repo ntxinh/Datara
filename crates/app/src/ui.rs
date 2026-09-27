@@ -355,6 +355,14 @@ mod tests {
                 });
         }
 
+        let actions = Rc::new(RefCell::new(Vec::<String>::new()));
+        {
+            let actions = Rc::clone(&actions);
+            window
+                .global::<Bridge>()
+                .on_completion_action(move |a| actions.borrow_mut().push(a.to_string()));
+        }
+
         let win = window.window();
         for ch in "SELECT x".chars() {
             press(win, ch.to_string());
@@ -364,6 +372,15 @@ mod tests {
             "SELECT x",
             "plain keys must insert into the editor (callback returned reject)"
         );
+
+        // Open the completion popup (Rust-side wiring pushes this model
+        // in the real app) — Ctrl+Return must still reach Bridge.command,
+        // not be swallowed as an accept.
+        window
+            .global::<Bridge>()
+            .set_completions(ModelRc::new(VecModel::from(vec![SharedString::from(
+                "SELECTED",
+            )])));
 
         // Ctrl+Return: modifier press + Return press.
         win.dispatch_event(WindowEvent::KeyPressed {
@@ -391,6 +408,15 @@ mod tests {
             window.global::<Bridge>().get_editor_text().as_str(),
             "SELECT x"
         );
+        // Popup was open but modified keys bypass it: no accept fired.
+        assert!(
+            actions.borrow().is_empty(),
+            "Ctrl+Return must not accept a completion: {:?}",
+            actions.borrow()
+        );
+        // Bare Return while the popup is open DOES accept.
+        press(win, Key::Return);
+        assert_eq!(actions.borrow().as_slice(), ["accept"]);
 
         // Push spans like editor-changed would, then rasterize.
         window

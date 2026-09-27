@@ -112,7 +112,11 @@ export component QueryEditor inherits Rectangle {
             key-pressed(event) => {
                 // Popup keys first, then app commands. Both run through
                 // Bridge so no key handling lives in the view.
-                if (Bridge.completions.length > 0) {
+                // Popup keys apply only for unmodified presses — modified
+                // keys (Ctrl+Enter, Ctrl+Tab, Ctrl+Shift+…) fall through to
+                // Bridge.command so app shortcuts keep working while the
+                // popup is open. Shift alone still accepts/navigates.
+                if (Bridge.completions.length > 0 && !event.modifiers.control && !event.modifiers.alt) {
                     if (event.text == Key.Tab || event.text == Key.Return) {
                         Bridge.completion-action("accept");
                         return accept;
