@@ -1,0 +1,18 @@
+/target
+/.superpowers
+/.sysdeps
+
+# Packaging artifacts
+/packaging/rpm/_build
+/packaging/flatpak/build
+/packaging/flatpak/repo
+/packaging/flatpak/.flatpak-builder
+*.flatpak
+*.rpm
+
+# Editor cruft
+*.swp
+*.swo
+*~
+.idea/
+.vscode/

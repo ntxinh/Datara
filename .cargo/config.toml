@@ -1,0 +1,5 @@
+[env]
+# fontconfig-devel stub extracted by make setup / scripts/fetch-fontconfig-stub.sh
+# when the system package can't be installed. Harmless if the dir doesn't exist
+# or PKG_CONFIG_PATH is already set in the environment.
+PKG_CONFIG_PATH = { value = ".sysdeps/usr/lib64/pkgconfig", relative = true }
