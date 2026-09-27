@@ -103,11 +103,13 @@ impl GridState {
         last
     }
 
-    /// Resize handle moved by `delta` px (incremental, per `moved` event).
+    /// Resize handle released: `delta` is the cumulative drag distance.
+    /// Rejects out-of-range `idx` rather than silently resizing column 0.
     pub fn resize(&mut self, bridge: &Bridge, idx: i32, delta: f32) {
-        let Some(w) = self.widths.get_mut(idx.max(0) as usize) else {
+        if idx < 0 || idx as usize >= self.widths.len() {
             return;
-        };
+        }
+        let w = &mut self.widths[idx as usize];
         *w = (*w + delta as i32).max(MIN_COL_WIDTH);
         self.push_cols(bridge);
     }

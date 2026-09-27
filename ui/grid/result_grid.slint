@@ -64,18 +64,32 @@ export component ResultGrid {
                             ? Theme.accent : transparent;
                         handle-ta := TouchArea {
                             mouse-cursor: col-resize;
-                            property<length> last;
+                            /// Accumulated drag delta — committed once on
+                            /// release so a live column resize can't
+                            /// destroy this pressed delegate mid-drag.
+                            property<length> delta;
                             pointer-event(e) => {
                                 if (e.kind == PointerEventKind.down) {
-                                    self.last = self.mouse-x;
+                                    self.delta = 0px;
+                                } else if (e.kind == PointerEventKind.up
+                                    && self.delta != 0px) {
+                                    Bridge.resize-column(i, self.delta);
                                 }
                             }
                             moved => {
+                                // pressed-x is in this (static during the
+                                // drag) handle's coords — cumulative.
                                 if (self.pressed) {
-                                    Bridge.resize-column(i, self.mouse-x - self.last);
-                                    self.last = self.mouse-x;
+                                    self.delta = self.mouse-x - self.pressed-x;
                                 }
                             }
+                        }
+                        // Drop line showing the pending column edge.
+                        Rectangle {
+                            visible: handle-ta.pressed;
+                            x: 2px + handle-ta.delta;
+                            width: 1px;
+                            background: Theme.accent;
                         }
                     }
                 }
@@ -141,9 +155,15 @@ export component ResultGrid {
                             }
 
                             cell-ta := TouchArea {
-                                clicked => {
-                                    Bridge.grid-select(r, c);
-                                    fs.focus();
+                                // Anchor the selection on press, not on
+                                // `clicked` (release) — otherwise a drag's
+                                // moved events run before any selection
+                                // exists and grid-drag early-returns.
+                                pointer-event(e) => {
+                                    if (e.kind == PointerEventKind.down) {
+                                        Bridge.grid-select(r, c);
+                                        fs.focus();
+                                    }
                                 }
                                 moved => {
                                     if (self.pressed) {

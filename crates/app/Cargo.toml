@@ -24,7 +24,7 @@ secrecy.workspace = true
 datara-storage.workspace = true
 tokio.workspace = true
 parking_lot.workspace = true
-arboard = "3"
+arboard = { version = "3", default-features = false }
 
 [dev-dependencies]
 rstest.workspace = true

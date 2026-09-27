@@ -154,7 +154,8 @@ export global Bridge {
     callback grid-drag(row: int, x: length);
     /// Ctrl+C with the grid focused: copy the selection as TSV.
     callback copy-selection();
-    /// Column resize handle moved by `delta` px since the last event.
+    /// Column-resize drag released: `delta` is the cumulative distance
+    /// from drag start (committed once so the live delegate survives).
     callback resize-column(idx: int, delta: length);
     /// Header clicked: toggle-sort that column.
     callback sort-column(idx: int);

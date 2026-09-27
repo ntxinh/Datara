@@ -718,8 +718,55 @@ mod tests {
         // Push a fake result through GridState (what AppEvent::QueryResult
         // calls in apply): columns + rows + footer land on the Bridge, and
         // the NULL cell carries is_null so .slint styles it.
-        let mut grid = crate::grid::GridState::default();
-        grid.set_result(
+        let grid = Rc::new(RefCell::new(crate::grid::GridState::default()));
+        // Bridge callbacks wired exactly like `run()` so pointer/key events
+        // dispatch through the real path.
+        {
+            let grid = Rc::clone(&grid);
+            let weak = window.as_weak();
+            bridge.on_grid_select(move |row, col| {
+                let Some(win) = weak.upgrade() else { return };
+                grid.borrow_mut().select(&win.global::<Bridge>(), row, col);
+            });
+        }
+        {
+            let grid = Rc::clone(&grid);
+            let weak = window.as_weak();
+            bridge.on_grid_drag(move |row, x| {
+                let Some(win) = weak.upgrade() else { return };
+                grid.borrow_mut().drag(&win.global::<Bridge>(), row, x);
+            });
+        }
+        {
+            let grid = Rc::clone(&grid);
+            let weak = window.as_weak();
+            bridge.on_resize_column(move |idx, delta| {
+                let Some(win) = weak.upgrade() else { return };
+                grid.borrow_mut()
+                    .resize(&win.global::<Bridge>(), idx, delta);
+            });
+        }
+        {
+            let grid = Rc::clone(&grid);
+            let weak = window.as_weak();
+            bridge.on_sort_column(move |idx| {
+                let Some(win) = weak.upgrade() else { return };
+                grid.borrow_mut().sort(&win.global::<Bridge>(), idx);
+            });
+        }
+        let copied = Rc::new(std::cell::Cell::new(false));
+        {
+            let grid = Rc::clone(&grid);
+            let weak = window.as_weak();
+            let copied = Rc::clone(&copied);
+            bridge.on_copy_selection(move || {
+                copied.set(true);
+                if let Some(win) = weak.upgrade() {
+                    grid.borrow_mut().copy(&win.global::<Bridge>());
+                }
+            });
+        }
+        grid.borrow_mut().set_result(
             &bridge,
             datara_domain::QueryResult {
                 columns: vec![
@@ -765,16 +812,111 @@ mod tests {
         );
         assert_eq!(bridge.get_result_info().as_str(), "2 rows");
 
-        // Cell click + drag: selection rectangle reaches Bridge.selection.
-        grid.select(&bridge, 0, 0);
-        grid.drag(&bridge, 1, 200.0); // x=200 inside col1 (140..280)
+        // Real pointer drag: press on a cell, move, release — the
+        // down-event must anchor the selection and the grabbed moved
+        // events must extend it. Scan for a live cell first so the test
+        // doesn't depend on hardcoded pixel geometry.
+        let pt = |x: f64, y: f64| slint::LogicalPosition::new(x as f32, y as f32);
+        let mut hit = None;
+        'scan: for y in (440..680).step_by(4) {
+            for x in (270..700).step_by(10) {
+                win.dispatch_event(WindowEvent::PointerPressed {
+                    position: pt(x as f64, y as f64),
+                    button: slint::platform::PointerEventButton::Left,
+                });
+                win.dispatch_event(WindowEvent::PointerReleased {
+                    position: pt(x as f64, y as f64),
+                    button: slint::platform::PointerEventButton::Left,
+                });
+                if bridge.get_selection().active {
+                    hit = Some((x, y));
+                    break 'scan;
+                }
+            }
+        }
+        let Some((hx, hy)) = hit else {
+            panic!("no grid cell received the pointer press");
+        };
+        let anchor = bridge.get_selection();
+        // Extend the drag ~1.5 rows down and ~1.5 cols right of the anchor
+        // cell; head row/col must differ from the anchor's.
+        win.dispatch_event(WindowEvent::PointerPressed {
+            position: pt(hx as f64, hy as f64),
+            button: slint::platform::PointerEventButton::Left,
+        });
+        win.dispatch_event(WindowEvent::PointerMoved {
+            position: pt(hx as f64 + 160.0, hy as f64 + 30.0),
+        });
+        win.dispatch_event(WindowEvent::PointerMoved {
+            position: pt(hx as f64 + 200.0, hy as f64 + 36.0),
+        });
         let sel = bridge.get_selection();
-        assert!(sel.active, "selection pushed");
-        assert_eq!((sel.r0, sel.c0, sel.r1, sel.c1), (0, 0, 1, 1));
+        assert!(
+            sel.active && (sel.r1 > sel.r0 || sel.c1 > sel.c0),
+            "drag must extend the selection head past the anchor: {sel:?}"
+        );
+        win.dispatch_event(WindowEvent::PointerReleased {
+            position: pt(hx as f64 + 200.0, hy as f64 + 36.0),
+            button: slint::platform::PointerEventButton::Left,
+        });
+        // 2 rows × 140px columns: anchor (0,0) at scan granularity must
+        // land within the 2×2 result — ends normalize to (0,0)-(1,1).
+        assert_eq!((anchor.r0, anchor.c0), (0, 0));
+        assert_eq!((sel.r1, sel.c1), (1, 1));
 
-        // Sort col 0 descending: row order flips in the pushed model.
-        grid.sort(&bridge, 0);
-        grid.sort(&bridge, 0);
+        // The press focused the grid's FocusScope — Ctrl+C must reach
+        // copy-selection (clipboard itself may be absent headless; the
+        // callback firing is the contract).
+        assert!(!copied.get());
+        press_ctrl(win, "c");
+        assert!(copied.get(), "Ctrl+C on the grid must fire copy-selection");
+
+        // Column-resize drag on the 4px handle at a column's right edge:
+        // press, move +40, release → the commit lands once on pointer-up.
+        // Scan the header band for the handle (drag that changes a width),
+        // avoiding geometry guesses.
+        let w_before = bridge.get_columns().row_data(0).unwrap().width;
+        let mut resized = None;
+        'hscan: for hy in (470..510).step_by(2) {
+            // col0 edge ≈ sidebar(264) + 140; probe ±8px around it.
+            for hx in (396..=412).step_by(2) {
+                win.dispatch_event(WindowEvent::PointerPressed {
+                    position: pt(hx as f64, hy as f64),
+                    button: slint::platform::PointerEventButton::Left,
+                });
+                win.dispatch_event(WindowEvent::PointerMoved {
+                    position: pt(hx as f64 + 20.0, hy as f64),
+                });
+                win.dispatch_event(WindowEvent::PointerMoved {
+                    position: pt(hx as f64 + 40.0, hy as f64),
+                });
+                // Still uncommitted mid-drag.
+                assert_eq!(
+                    bridge.get_columns().row_data(0).unwrap().width,
+                    w_before,
+                    "resize must not commit until pointer-up"
+                );
+                win.dispatch_event(WindowEvent::PointerReleased {
+                    position: pt(hx as f64 + 40.0, hy as f64),
+                    button: slint::platform::PointerEventButton::Left,
+                });
+                let w = bridge.get_columns().row_data(0).unwrap().width;
+                if w != w_before {
+                    resized = Some(w);
+                    break 'hscan;
+                }
+            }
+        }
+        assert_eq!(
+            resized,
+            Some(w_before + 40),
+            "handle drag must commit +40px on release"
+        );
+
+        // Header-click sort via the model path (pointer-level covered by
+        // select/resize): descending flips row order in the pushed model.
+        grid.borrow_mut().sort(&bridge, 0);
+        grid.borrow_mut().sort(&bridge, 0);
         assert_eq!(bridge.get_sort_col(), 0);
         assert!(!bridge.get_sort_asc(), "second click flips direction");
         let rows = bridge.get_rows();
@@ -792,9 +934,15 @@ mod tests {
         // Sort cleared the selection (coords refer to old row order).
         assert!(!bridge.get_selection().active);
 
-        // Column resize clamps at the 40px minimum.
-        grid.resize(&bridge, 0, -1000.0);
+        // Column resize clamps at the 40px minimum; bad index is rejected.
+        grid.borrow_mut().resize(&bridge, 0, -1000.0);
         assert_eq!(bridge.get_columns().row_data(0).unwrap().width, 40);
+        grid.borrow_mut().resize(&bridge, -1, 500.0);
+        assert_eq!(
+            bridge.get_columns().row_data(0).unwrap().width,
+            40,
+            "negative idx must not touch column 0"
+        );
 
         // Snapshot while the grid is populated — the cell region must
         // differ from the empty pane (header bar + cell text land pixels).
@@ -824,7 +972,7 @@ mod tests {
             "expected grid text pixels in the results pane, found {fg_px}"
         );
         // QueryStarted path: clear empties everything but keeps info text.
-        grid.clear(&bridge, "Running…");
+        grid.borrow_mut().clear(&bridge, "Running…");
         assert_eq!(bridge.get_rows().row_count(), 0);
         assert_eq!(bridge.get_columns().row_count(), 0);
         assert_eq!(bridge.get_result_info().as_str(), "Running…");
