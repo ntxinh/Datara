@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Phase 8: add `rpm` and `flatpak` jobs alongside this one
+  # (cargo-generate-rpm / flatpak-builder + their system deps), then attach
+  # those artifacts to the same release. Tarball is the interim artifact.
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libfontconfig-dev libxkbcommon-dev \
+            libwayland-dev libgl1-mesa-dev libxcb1-dev libxcb-util-dev \
+            libxkbcommon-x11-dev
+
+      - uses: jdx/mise-action@v3
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release -p datara
+
+      - name: Package tarball
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "datara") | .version')
+          tar -czf "datara-${version}-x86_64-unknown-linux-gnu.tar.gz" \
+            -C target/release datara
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: datara-*-x86_64-unknown-linux-gnu.tar.gz

@@ -1,0 +1,30 @@
+name: Security
+
+on:
+  push:
+  schedule:
+    # Weekly, Monday 06:00 UTC.
+    - cron: '0 6 * * 1'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Needed for `cargo metadata` inside cargo-deny/cargo-audit.
+      - uses: jdx/mise-action@v3
+      - uses: Swatinem/rust-cache@v2
+
+      # install-action fetches prebuilt binaries and caches them.
+      - uses: taiki-e/install-action@cargo-deny
+      - uses: taiki-e/install-action@cargo-audit
+
+      - name: cargo deny
+        run: cargo deny check
+
+      - name: cargo audit
+        run: cargo audit

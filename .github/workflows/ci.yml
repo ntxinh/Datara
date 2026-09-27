@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # System deps for Slint (femtovg GL backend needs mesa GL dev headers).
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libfontconfig-dev libxkbcommon-dev \
+            libwayland-dev libgl1-mesa-dev libxcb1-dev libxcb-util-dev \
+            libxkbcommon-x11-dev
+
+      # Rust toolchain comes from mise.toml, never the runner image.
+      - uses: jdx/mise-action@v3
+      - uses: Swatinem/rust-cache@v2
+
+      - name: fmt
+        run: cargo fmt --all -- --check
+
+      - name: check
+        run: cargo check --workspace
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      # MSSQL integration tests skip gracefully: no docker/podman socket on
+      # ubuntu-latest (they check DOCKER_HOST). Do not install docker here.
+      - name: test
+        run: cargo test --workspace
+
+      - name: build (release)
+        run: cargo build --workspace --release
