@@ -12,11 +12,11 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use crate::editor_ui::{highlight_spans, line_count, statement_to_run, EditorState};
+use crate::editor_ui::{highlight_spans, line_count, resolve_sql, EditorState};
 use crate::schema_tree::{NodeKind, SchemaTree, TreeNode};
 use crate::services::{preview_sql, Backend};
 use crate::{Bridge, HighlightSpan, MainWindow, TabItem, TreeNode as SlintTreeNode};
-use datara_domain::{Command, ConnectionId, ConnectionProfile};
+use datara_domain::{Command, ConnectionId, ConnectionProfile, QueryResult};
 use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 
 /// Events flowing core → UI.
@@ -41,8 +41,34 @@ pub enum AppEvent {
     },
     /// A keyboard command (mpsc → event loop → here).
     Command(Command),
-    /// Query finished: row count or the error text.
-    QueryDone(Result<u64, String>),
+    /// `service.execute` returned a handle — the tab is running.
+    QueryStarted {
+        /// Editor tab that started running (Phase 5 grid targeting).
+        #[allow(dead_code)]
+        tab: i32,
+    },
+    /// Query finished with a result. `tab` is unused until Phase 5's grid
+    /// renders per-tab results; the status bar carries the summary.
+    QueryResult {
+        /// Editor tab that produced the result (Phase 5 grid targeting).
+        #[allow(dead_code)]
+        tab: i32,
+        result: QueryResult,
+        elapsed_ms: u64,
+    },
+    /// Query failed or timed out; `message` is user-readable.
+    QueryError {
+        /// Editor tab the error belongs to (Phase 5 grid targeting).
+        #[allow(dead_code)]
+        tab: i32,
+        message: String,
+    },
+    /// The user cancelled the query (Stop button / `cancel-query`).
+    QueryCancelled {
+        /// Editor tab whose query was cancelled.
+        #[allow(dead_code)]
+        tab: i32,
+    },
 }
 
 /// Everything `apply` needs on the UI thread. Shared between `UiHandle`
@@ -149,13 +175,39 @@ fn apply(window: &MainWindow, cx: &Arc<UiCtx>, event: AppEvent) {
             bridge.set_status(format!("Preview: {label}").into());
         }
         AppEvent::Command(cmd) => run_command(window, cx, cmd),
-        AppEvent::QueryDone(Ok(rows)) => {
-            bridge.set_status(format!("{rows} rows").into());
-            bridge.set_results_text(format!("{rows} rows returned").into());
+        AppEvent::QueryStarted { .. } => {
+            bridge.set_query_running(true);
         }
-        AppEvent::QueryDone(Err(e)) => {
-            bridge.set_status(format!("Query failed: {e}").into());
-            bridge.set_results_text(format!("Error: {e}").into());
+        AppEvent::QueryResult {
+            result, elapsed_ms, ..
+        } => {
+            bridge.set_query_running(cx.backend.any_running());
+            let (status, results) = match result.rows_affected {
+                Some(n) if result.columns.is_empty() => (
+                    format!("{n} rows affected in {elapsed_ms}ms"),
+                    format!("{n} rows affected"),
+                ),
+                _ => {
+                    let n = result.rows.len();
+                    let suffix = if result.truncated { " (truncated)" } else { "" };
+                    (
+                        format!("{n} rows in {elapsed_ms}ms{suffix}"),
+                        format!("{n} rows returned{suffix}"),
+                    )
+                }
+            };
+            bridge.set_status(status.into());
+            bridge.set_results_text(results.into());
+        }
+        AppEvent::QueryError { message, .. } => {
+            bridge.set_query_running(cx.backend.any_running());
+            bridge.set_status(message.clone().into());
+            bridge.set_results_text(format!("Error: {message}").into());
+        }
+        AppEvent::QueryCancelled { .. } => {
+            bridge.set_query_running(cx.backend.any_running());
+            bridge.set_status("Cancelled".into());
+            bridge.set_results_text("Query cancelled".into());
         }
     }
 }
@@ -165,17 +217,19 @@ fn run_command(window: &MainWindow, cx: &Arc<UiCtx>, cmd: Command) {
     let bridge = window.global::<Bridge>();
     match cmd {
         Command::ExecuteQuery => {
-            let (sql, conn, db) = {
+            let (sql, conn, db, tab_id) = {
                 let mut editor = cx.editor.lock();
                 let text = bridge.get_editor_text().to_string();
                 let caret = editor.cursor;
                 editor.stash(text.clone(), caret);
-                let range = statement_to_run(&text, editor.anchor, editor.cursor);
-                let tab = editor.active_tab();
+                let range = resolve_sql(&text, editor.anchor, editor.cursor);
+                let sql = range.map(|(s, e)| text[s..e].to_string());
+                let tab = &editor.tabs[editor.active];
                 (
-                    range.map(|(s, e)| text[s..e].to_string()),
+                    sql,
                     tab.conn_id.or_else(|| cx.backend.last_conn_id()),
                     tab.database.clone(),
+                    tab.id,
                 )
             };
             let Some(sql) = sql.filter(|s| !s.trim().is_empty()) else {
@@ -186,11 +240,16 @@ fn run_command(window: &MainWindow, cx: &Arc<UiCtx>, cmd: Command) {
                 bridge.set_status("No connection — expand a connection first".into());
                 return;
             };
+            if let Some(t) = cx.editor.lock().tabs.iter_mut().find(|t| t.id == tab_id) {
+                t.last_query = Some(sql.clone());
+            }
             let backend = Arc::clone(&cx.backend);
             let ui = UiHandle::new(window, Arc::clone(cx));
             let limit = cx.query_limit as usize;
             cx.handle.spawn(async move {
-                backend.execute_sql(conn_id, db, sql, limit, ui).await;
+                backend
+                    .execute_sql(tab_id, conn_id, db, sql, limit, ui)
+                    .await;
             });
             bridge.set_status("Executing…".into());
         }

@@ -214,9 +214,11 @@ mod tests {
     }
 
     /// Session that returns a fixed query result (or a fixed error when
-    /// `fail`). Metadata methods return empty vecs — unused by these tests.
+    /// `fail`; a never-completing future when `hang`). Metadata methods
+    /// return empty vecs — unused by these tests.
     struct StubSession {
         fail: bool,
+        hang: bool,
     }
 
     fn one_result() -> QueryResult {
@@ -255,6 +257,9 @@ mod tests {
             })
         }
         async fn execute(&self, _d: &str, _q: &str, _m: usize) -> Result<QueryResult> {
+            if self.hang {
+                std::future::pending::<()>().await;
+            }
             if self.fail {
                 Err(DomainError::Query {
                     message: "boom".into(),
@@ -279,6 +284,7 @@ mod tests {
     struct StubDriver {
         connects: Arc<AtomicUsize>,
         fail: bool,
+        hang: bool,
     }
 
     #[async_trait]
@@ -289,12 +295,16 @@ mod tests {
             _c: &Credentials,
         ) -> Result<Box<dyn DatabaseSession>> {
             self.connects.fetch_add(1, Ordering::SeqCst);
-            Ok(Box::new(StubSession { fail: self.fail }))
+            Ok(Box::new(StubSession {
+                fail: self.fail,
+                hang: self.hang,
+            }))
         }
     }
 
     async fn service(
         fail: bool,
+        hang: bool,
     ) -> (
         DatabaseService<StubDriver>,
         Arc<AtomicUsize>,
@@ -324,6 +334,7 @@ mod tests {
             driver: StubDriver {
                 connects: Arc::clone(&connects),
                 fail,
+                hang,
             },
             sessions: Mutex::new(HashMap::new()),
         };
@@ -332,7 +343,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_connects_once_and_caches() {
-        let (svc, connects, id, _dir) = service(false).await;
+        let (svc, connects, id, _dir) = service(false, false).await;
         let a = svc.session(id).await.unwrap();
         let b = svc.session(id).await.unwrap();
         assert!(Arc::ptr_eq(&a, &b));
@@ -341,7 +352,7 @@ mod tests {
 
     #[tokio::test]
     async fn disconnect_reconnects() {
-        let (svc, connects, id, _dir) = service(false).await;
+        let (svc, connects, id, _dir) = service(false, false).await;
         svc.session(id).await.unwrap();
         svc.disconnect(id).await;
         svc.session(id).await.unwrap();
@@ -350,14 +361,14 @@ mod tests {
 
     #[tokio::test]
     async fn session_unknown_id_is_storage_error() {
-        let (svc, _c, _id, _dir) = service(false).await;
+        let (svc, _c, _id, _dir) = service(false, false).await;
         let err = svc.session(ConnectionId(999)).await.err().unwrap();
         assert!(matches!(err, DomainError::Storage { .. }));
     }
 
     #[tokio::test]
     async fn test_connection_does_not_cache() {
-        let (svc, connects, id, _dir) = service(false).await;
+        let (svc, connects, id, _dir) = service(false, false).await;
         let profile = svc.storage.connections().get(id).await.unwrap();
         let creds = Credentials {
             username: "sa".into(),
@@ -370,7 +381,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_records_success_history() {
-        let (svc, _c, id, _dir) = service(false).await;
+        let (svc, _c, id, _dir) = service(false, false).await;
         let result = svc
             .execute(id, None, "SELECT 1".into(), 10)
             .await
@@ -396,7 +407,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_records_failure_history() {
-        let (svc, _c, id, _dir) = service(true).await;
+        let (svc, _c, id, _dir) = service(true, false).await;
         let err = svc
             .execute(id, Some("db".into()), "SELECT bad".into(), 10)
             .await
@@ -416,5 +427,36 @@ mod tests {
         assert!(!history[0].success);
         assert_eq!(history[0].database.as_deref(), Some("db"));
         assert!(history[0].error_message.is_some());
+    }
+
+    /// Cancel path used by the UI: abort the in-flight handle, then
+    /// `disconnect` — the aborted query left the TDS stream mid-response,
+    /// so the pooled session is dropped and the next call reconnects.
+    /// A cancelled query records no history entry.
+    #[tokio::test]
+    async fn abort_then_disconnect_resets_session() {
+        let (svc, connects, id, _dir) = service(false, true).await;
+        let handle = svc
+            .execute(id, None, "WAITFOR DELAY".into(), 10)
+            .await
+            .unwrap();
+        assert_eq!(connects.load(Ordering::SeqCst), 1);
+
+        handle.abort();
+        assert!(handle.await.unwrap_err().is_cancelled());
+        svc.disconnect(id).await;
+
+        // Fresh session on next use — the desynced one is gone.
+        svc.session(id).await.unwrap();
+        assert_eq!(connects.load(Ordering::SeqCst), 2);
+
+        // Cancelled queries record nothing.
+        assert!(svc
+            .storage
+            .history()
+            .search(Some(id), "", 10)
+            .await
+            .unwrap()
+            .is_empty());
     }
 }

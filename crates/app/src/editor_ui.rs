@@ -12,6 +12,7 @@ use crate::HighlightSpan;
 
 /// One editor tab. `conn_id`/`database` are set when the tab was opened
 /// from a schema-tree action; `None` falls back to `Backend::last_conn_id`.
+/// `last_query` is the SQL most recently sent from this tab (Ctrl+Enter).
 #[derive(Debug, Clone)]
 pub struct EditorTab {
     pub id: i32,
@@ -20,6 +21,7 @@ pub struct EditorTab {
     pub cursor: usize,
     pub conn_id: Option<ConnectionId>,
     pub database: Option<String>,
+    pub last_query: Option<String>,
 }
 
 /// Tab strip + active buffer + completion popup state.
@@ -108,6 +110,7 @@ impl EditorState {
             cursor: 0,
             conn_id: None,
             database: None,
+            last_query: None,
         });
         self.active = self.tabs.len() - 1;
         self.completions.clear();
@@ -134,6 +137,7 @@ impl EditorState {
             cursor: 0,
             conn_id,
             database,
+            last_query: None,
         });
         self.active = self.tabs.len() - 1;
         self.completions.clear();
@@ -252,14 +256,20 @@ impl EditorState {
 }
 
 /// SQL to execute for `Command::ExecuteQuery`: the selection when there is
-/// one, else the statement under the cursor, else the whole buffer.
-pub fn statement_to_run(text: &str, anchor: usize, cursor: usize) -> Option<(usize, usize)> {
+/// one, else the statement under the cursor, else the whole document.
+/// `statement_at` returns None only for leading trivia before the first
+/// statement (a trivia-only buffer) — running the whole doc then matches
+/// other SQL clients. Empty buffer → None.
+pub fn resolve_sql(text: &str, anchor: usize, cursor: usize) -> Option<(usize, usize)> {
     let (lo, hi) = (anchor.min(cursor), anchor.max(cursor));
     if lo != hi && hi <= text.len() && text.is_char_boundary(lo) && text.is_char_boundary(hi) {
         return Some((lo, hi));
     }
     let cursor = cursor.min(text.len());
-    statement_at(text, cursor).map(|r| (r.start, r.end))
+    match statement_at(text, cursor).map(|r| (r.start, r.end)) {
+        Some(range) => Some(range),
+        None => (!text.is_empty()).then_some((0, text.len())),
+    }
 }
 
 /// `[A-Za-z0-9_]` run ending at `cursor` — the completion prefix. None for
@@ -433,18 +443,23 @@ mod tests {
     #[case::cursor_in_stmt("SELECT 1; SELECT 2", 12, 12, Some((10, 18)))]
     #[case::cursor_first("SELECT 1; SELECT 2", 3, 3, Some((0, 10)))]
     #[case::empty("", 0, 0, None)]
+    // Cursor in leading trivia before the first statement: no covering
+    // range → whole doc. (Trailing trivia folds into the previous stmt.)
+    #[case::leading_trivia("   SELECT 1", 1, 1, Some((0, 11)))]
+    // Trivia-only buffer: nothing to run as a statement → whole doc.
+    #[case::trivia_only("-- x\n", 0, 0, Some((0, 5)))]
+    // Collapsed selection (anchor == cursor) → falls through to statement.
+    #[case::collapsed_selection("SELECT 1; SELECT 2", 8, 8, Some((0, 10)))]
+    // Selection ending mid-char ('€' spans bytes 8..11) is rejected →
+    // statement mode instead of a half-sliced UTF-8 range.
+    #[case::mid_char_selection("SELECT '€'", 0, 10, Some((0, 12)))]
     fn resolves(
         #[case] text: &str,
         #[case] anchor: usize,
         #[case] cursor: usize,
         #[case] expected: Option<(usize, usize)>,
     ) {
-        assert_eq!(statement_to_run(text, anchor, cursor), expected);
-    }
-
-    #[test]
-    fn trivia_only_buffer_runs_nothing() {
-        assert_eq!(statement_to_run("-- x\n", 0, 0), None);
+        assert_eq!(resolve_sql(text, anchor, cursor), expected);
     }
 
     #[rstest::rstest]

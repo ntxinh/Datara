@@ -92,6 +92,12 @@ export global Bridge {
     /// to do (nothing when the popup is hidden).
     callback completion-action(string);
 
+    // ── Execution (Task 4.3) ─────────────────────────────────────────
+    /// Stop button: abort the query running on the active tab (or the only
+    /// running query when the user switched tabs mid-flight).
+    callback cancel-query();
+    /// Any tab has a query in flight — shows the Stop button.
+    in property<bool> query-running;
     // ── Tabs (Task 4.2) ─────────────────────────────────────────────
     in property<[TabItem]> tabs;
     in property<int> active-tab;

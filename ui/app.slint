@@ -60,6 +60,12 @@ export component MainWindow inherits Window {
                             Bridge.command("\n", true, false, false);
                         }
                     }
+                    if Bridge.query-running: Button {
+                        text: "Stop";
+                        clicked => {
+                            Bridge.cancel-query();
+                        }
+                    }
                 }
             }
 

@@ -102,12 +102,20 @@ impl MssqlSession {
         }
     }
 
-    /// Issue `USE [database]` on `client`. Caller must hold the lock.
+    /// `USE [database]` for `database`, or None for an empty name — an
+    /// empty database means "server default", and `USE []` would be an
+    /// invalid-identifier error. Pure so it's unit-testable without a live
+    /// client.
+    fn use_statement(database: &str) -> Option<String> {
+        (!database.is_empty()).then(|| format!("USE {}", quote_ident(database)))
+    }
+
+    /// Issue `USE [database]` on `client`; a no-op for the empty name
+    /// (server-default database). Caller must hold the lock.
     async fn switch_db(client: &mut Client<Compat<TcpStream>>, database: &str) -> Result<()> {
-        client
-            .execute(format!("USE {}", quote_ident(database)), &[])
-            .await
-            .map_err(map_tiberius_error)?;
+        if let Some(sql) = Self::use_statement(database) {
+            client.execute(sql, &[]).await.map_err(map_tiberius_error)?;
+        }
         Ok(())
     }
 
@@ -285,5 +293,14 @@ mod tests {
         assert!(!is_row_returning("INSERT INTO t VALUES (1)"));
         // Unparseable (server-specific) syntax falls back to the query path.
         assert!(is_row_returning("some @@garbage$$"));
+    }
+
+    #[test]
+    fn empty_database_skips_use() {
+        assert_eq!(MssqlSession::use_statement(""), None);
+        assert_eq!(
+            MssqlSession::use_statement("db"),
+            Some("USE [db]".to_owned())
+        );
     }
 }

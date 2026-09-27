@@ -3,7 +3,9 @@
 //! Slint UI as `Arc<AppServices>`; backend work is spawned onto `runtime`
 //! from UI callbacks (see `ui.rs`), results return via `UiHandle`.
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use datara_config::{AppConfig, AppPaths};
 use datara_database::DatabaseService;
@@ -42,6 +44,18 @@ pub struct Backend {
     /// Last connection that produced schema data — the fallback target for
     /// editor tabs that weren't opened from a tree node (Task 4.2).
     last_conn_id: std::sync::atomic::AtomicI64,
+    /// In-flight queries by editor tab id. `JoinHandle` isn't cloneable, so
+    /// the map holds an `AbortHandle`; the awaiting task owns the join.
+    running: parking_lot::Mutex<HashMap<i32, RunningQuery>>,
+    /// `[query] timeout_seconds` from config.
+    query_timeout: Duration,
+}
+
+/// Cancellation bookkeeping for one running query. `abort` is None while
+/// the slot is reserved but the query hasn't spawned yet (connect path).
+struct RunningQuery {
+    abort: Option<tokio::task::AbortHandle>,
+    conn_id: ConnectionId,
 }
 
 /// Long-lived application state: runtime + backend + config.
@@ -64,11 +78,14 @@ impl AppServices {
             Arc::clone(&storage),
             Arc::clone(&secrets),
         ));
+        let query_timeout = Duration::from_secs(config.query.timeout_seconds);
         let backend = Arc::new(Backend {
             storage,
             secrets,
             service,
             last_conn_id: std::sync::atomic::AtomicI64::new(-1),
+            running: parking_lot::Mutex::new(HashMap::new()),
+            query_timeout,
         });
         Ok(Self {
             runtime,
@@ -86,6 +103,36 @@ pub fn preview_sql(schema: &str, table: &str, limit: u32) -> String {
         quote_ident(schema),
         quote_ident(table)
     )
+}
+
+/// Status-bar text for a failed query: `Msg {n}, Line {l}: {msg}` when the
+/// server reported number/line, else the error's `Display`.
+fn query_error_text(e: &DomainError) -> String {
+    match e {
+        DomainError::Query {
+            message,
+            error_number,
+            line,
+            column,
+        } => {
+            let mut head = Vec::new();
+            if let Some(n) = error_number {
+                head.push(format!("Msg {n}"));
+            }
+            if let Some(l) = line {
+                head.push(format!("Line {l}"));
+            }
+            if let Some(c) = column {
+                head.push(format!("Col {c}"));
+            }
+            if head.is_empty() {
+                format!("Query failed: {message}")
+            } else {
+                format!("{}: {message}", head.join(", "))
+            }
+        }
+        _ => e.to_string(),
+    }
 }
 
 fn encryption_mode(s: &str) -> EncryptionMode {
@@ -209,11 +256,22 @@ impl Backend {
             .store(id.0, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// `Command::ExecuteQuery`: run `sql` and report the row count (or the
-    /// error) back through the status/results area. Phase 5 swaps the
+    /// True while any tab has a query in flight — drives the Stop button.
+    pub fn any_running(&self) -> bool {
+        !self.running.lock().is_empty()
+    }
+
+    /// `Command::ExecuteQuery`: run `sql` for editor `tab_id` and report the
+    /// outcome back through the status/results area. Phase 5 swaps the
     /// row-count status for the real grid.
+    ///
+    /// One query per tab at a time: a second Execute on a running tab is
+    /// rejected. The handle is awaited under the configured timeout; on
+    /// elapse the task is aborted and the pooled session dropped (the TDS
+    /// stream may be mid-response and is not reusable).
     pub async fn execute_sql(
         &self,
+        tab_id: i32,
         conn_id: ConnectionId,
         database: Option<String>,
         sql: String,
@@ -221,19 +279,100 @@ impl Backend {
         ui: UiHandle,
     ) {
         self.set_last_conn_id(conn_id);
-        match self.service.execute(conn_id, database, sql, max_rows).await {
-            Ok(handle) => {
-                let event = match handle.await {
-                    Ok(Ok(r)) => {
-                        AppEvent::QueryDone(Ok(r.rows_affected.unwrap_or(r.rows.len() as u64)))
-                    }
-                    Ok(Err(e)) => AppEvent::QueryDone(Err(e.to_string())),
-                    Err(e) => AppEvent::QueryDone(Err(format!("task failed: {e}"))),
-                };
-                ui.dispatch(event);
+        // Reserve the slot before `execute` — the profile fetch + connect
+        // inside it can take seconds, and a second Ctrl+Enter (or a
+        // premature Cancel) must see this tab as busy.
+        match self.running.lock().entry(tab_id) {
+            std::collections::hash_map::Entry::Occupied(_) => {
+                ui.dispatch(AppEvent::Status("Query already running on this tab".into()));
+                return;
             }
-            Err(e) => ui.dispatch(AppEvent::QueryDone(Err(e.to_string()))),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                v.insert(RunningQuery {
+                    abort: None,
+                    conn_id,
+                });
+            }
         }
+        let mut handle = match self.service.execute(conn_id, database, sql, max_rows).await {
+            Ok(h) => h,
+            Err(e) => {
+                self.running.lock().remove(&tab_id);
+                ui.dispatch(AppEvent::QueryError {
+                    tab: tab_id,
+                    message: query_error_text(&e),
+                });
+                return;
+            }
+        };
+        {
+            let mut running = self.running.lock();
+            match running.get_mut(&tab_id) {
+                // Cancelled while connecting: kill it before it starts —
+                // cancel_query already dispatched QueryCancelled.
+                None => {
+                    handle.abort();
+                    return;
+                }
+                Some(rq) => rq.abort = Some(handle.abort_handle()),
+            }
+        }
+        ui.dispatch(AppEvent::QueryStarted { tab: tab_id });
+        let started = std::time::Instant::now();
+        match tokio::time::timeout(self.query_timeout, &mut handle).await {
+            Ok(Ok(Ok(r))) => ui.dispatch(AppEvent::QueryResult {
+                tab: tab_id,
+                result: r,
+                elapsed_ms: started.elapsed().as_millis() as u64,
+            }),
+            Ok(Ok(Err(e))) => ui.dispatch(AppEvent::QueryError {
+                tab: tab_id,
+                message: query_error_text(&e),
+            }),
+            Ok(Err(je)) if je.is_cancelled() => {
+                // The cancel path already dispatched QueryCancelled.
+            }
+            Ok(Err(je)) => ui.dispatch(AppEvent::QueryError {
+                tab: tab_id,
+                message: format!("task failed: {je}"),
+            }),
+            Err(_elapsed) => {
+                // Same fix as an explicit cancel: abort + drop the session —
+                // the server is still processing this batch.
+                handle.abort();
+                self.service.disconnect(conn_id).await;
+                ui.dispatch(AppEvent::QueryError {
+                    tab: tab_id,
+                    message: format!("Query timed out after {}s", self.query_timeout.as_secs()),
+                });
+            }
+        }
+        self.running.lock().remove(&tab_id);
+    }
+
+    /// `Bridge.cancel-query` / Stop button: abort the running query — the
+    /// active tab's when it has one, else whichever query is in flight —
+    /// then drop its pooled session (aborting leaves the TDS stream
+    /// mid-response; the next execute reconnects).
+    pub async fn cancel_query(&self, tab_id: i32, ui: UiHandle) {
+        let entry = {
+            let mut running = self.running.lock();
+            running.remove_entry(&tab_id).or_else(|| {
+                running
+                    .keys()
+                    .next()
+                    .copied()
+                    .and_then(|k| running.remove_entry(&k))
+            })
+        };
+        let Some((tab, rq)) = entry else {
+            return;
+        };
+        if let Some(abort) = rq.abort {
+            abort.abort();
+        }
+        self.service.disconnect(rq.conn_id).await;
+        ui.dispatch(AppEvent::QueryCancelled { tab });
     }
 
     /// `toggle-node` on an unexpanded row: fetch its children by kind and
@@ -378,6 +517,33 @@ mod tests {
     }
 
     #[test]
+    fn query_error_text_formats_server_location() {
+        let e = DomainError::Query {
+            message: "Invalid object name 'foo'.".into(),
+            error_number: Some(208),
+            line: Some(3),
+            column: None,
+        };
+        assert_eq!(
+            query_error_text(&e),
+            "Msg 208, Line 3: Invalid object name 'foo'."
+        );
+
+        let bare = DomainError::Query {
+            message: "boom".into(),
+            error_number: None,
+            line: None,
+            column: None,
+        };
+        assert_eq!(query_error_text(&bare), "Query failed: boom");
+
+        let other = DomainError::Storage {
+            message: "disk".into(),
+        };
+        assert_eq!(query_error_text(&other), "Storage error: disk");
+    }
+
+    #[test]
     #[ignore = "needs a live Secret Service; run manually"]
     fn smoke_save_persists_profile_and_secret() {
         let tmp = std::env::temp_dir().join(format!("datara-smoke-{}", std::process::id()));
@@ -429,6 +595,114 @@ mod tests {
             std::fs::remove_dir_all(&tmp).ok();
         }
         println!("smoke data dir: {}", tmp.display());
+    }
+
+    /// Live end-to-end execute + cancel against the dev container
+    /// (`datara-mssql` on 127.0.0.1:11433, sa / Datara!1234): seed a
+    /// profile + secret, run SELECT (history row written), run a 30s
+    /// WAITFOR, cancel it (abort + disconnect → no history row), then
+    /// execute again on the fresh session.
+    #[test]
+    #[ignore = "needs datara-mssql on 127.0.0.1:11433 and a session Secret Service"]
+    fn smoke_execute_then_cancel() {
+        let tmp = std::env::temp_dir().join(format!("datara-exec-smoke-{}", std::process::id()));
+        std::env::set_var("DATARA_DATA_DIR", &tmp);
+        std::env::set_var("DATARA_CONFIG_DIR", tmp.join("cfg"));
+        std::env::set_var("DATARA_STATE_DIR", tmp.join("state"));
+
+        let svc = AppServices::init().expect("services init");
+        svc.runtime.block_on(async {
+            let backend = Arc::clone(&svc.backend);
+            let repo = backend.storage.connections();
+            let id = repo
+                .insert(NewConnection {
+                    name: "exec-smoke".into(),
+                    host: "127.0.0.1".into(),
+                    port: 11433,
+                    database: Some("master".into()),
+                    username: "sa".into(),
+                    authentication: AuthenticationMode::SqlPassword,
+                    encryption: EncryptionMode::Preferred,
+                    trust_server_certificate: true,
+                })
+                .await
+                .unwrap();
+            let reference = repo.get(id).await.unwrap().secret_reference;
+            backend
+                .secrets
+                .save(
+                    &reference,
+                    "exec-smoke",
+                    &SecretString::from("Datara!1234".to_owned()),
+                )
+                .await
+                .unwrap();
+
+            let ui = test_ui(&svc);
+
+            // Successful execute writes a history row (recorded inside the
+            // task before the handle resolves).
+            backend
+                .execute_sql(
+                    1,
+                    id,
+                    Some("master".into()),
+                    "SELECT 1".into(),
+                    10,
+                    ui.clone(),
+                )
+                .await;
+            let h = backend
+                .storage
+                .history()
+                .search(Some(id), "SELECT", 10)
+                .await
+                .unwrap();
+            assert_eq!(h.len(), 1);
+            assert!(h[0].success);
+
+            // Hanging query → marked running → cancel → history clean.
+            let b2 = Arc::clone(&backend);
+            let ui2 = ui.clone();
+            let exec = tokio::spawn(async move {
+                b2.execute_sql(2, id, None, "WAITFOR DELAY '00:00:30'".into(), 10, ui2)
+                    .await;
+            });
+            for _ in 0..100 {
+                if backend.any_running() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            assert!(backend.any_running(), "WAITFOR never registered");
+            backend.cancel_query(2, ui.clone()).await;
+            assert!(!backend.any_running());
+            exec.await.unwrap();
+            assert!(backend
+                .storage
+                .history()
+                .search(Some(id), "WAITFOR", 10)
+                .await
+                .unwrap()
+                .is_empty());
+
+            // Post-cancel execute reconnects and works.
+            backend
+                .execute_sql(3, id, None, "SELECT 2".into(), 10, ui)
+                .await;
+            let h = backend
+                .storage
+                .history()
+                .search(Some(id), "SELECT 2", 10)
+                .await
+                .unwrap();
+            assert_eq!(h.len(), 1);
+
+            backend.secrets.delete(&reference).await.unwrap();
+            // The profile row stays: history FK-references it, and the
+            // whole temp db is removed below anyway.
+        });
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     /// Exercises the real fetch chain end-to-end against a live server:

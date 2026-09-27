@@ -196,6 +196,22 @@ pub fn run(services: AppServices) -> anyhow::Result<()> {
         });
     }
 
+    // ── Execution ────────────────────────────────────────────────────
+
+    {
+        let services = Rc::clone(&services);
+        let ui = ui.clone();
+        let cx = Arc::clone(&cx);
+        bridge.on_cancel_query(move || {
+            let tab = cx.editor.lock().active_tab().id;
+            let backend = Arc::clone(&services.backend);
+            let ui = ui.clone();
+            services.runtime.spawn(async move {
+                backend.cancel_query(tab, ui).await;
+            });
+        });
+    }
+
     {
         let cx = Arc::clone(&cx);
         let weak = window.as_weak();
