@@ -1,0 +1,11 @@
+# Architecture overview
+
+Ten-crate Cargo workspace; dependency direction is `UI → app → domain →
+infrastructure → drivers`. `datara-domain` holds types only and depends on
+nothing project-internal; `datara-app` is the sole Slint consumer and the
+composition root. See `DESIGN.md` for the system diagram and crate graph.
+
+**Implemented:** workspace scaffold, `domain` types, `config`, `storage`,
+`database` traits, minimal `app` binary (GUI launch + `mcp-serve` stub).
+**Pending:** driver-mssql, secrets, sql-editor, data-grid, mcp-server bodies —
+phases 2–7.

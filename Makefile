@@ -41,6 +41,10 @@ deny:
 clean:
 	cargo clean
 
-# TODO(Task 1.7): verify every file listed in docs/README.md exists.
+# Verify every file linked from docs/README.md exists.
 docs-check:
-	@echo "TODO: docs index check lands with the docs tree (Task 1.7)"
+	@missing=0; \
+	for f in $$(grep -oE '\]\([a-zA-Z0-9/_.-]+\.md\)' docs/README.md | sed 's/^](//; s/)$$//'); do \
+		[ -f "docs/$$f" ] || { echo "missing: docs/$$f"; missing=1; }; \
+	done; \
+	[ $$missing -eq 0 ] && echo "docs index OK: all linked files exist"
