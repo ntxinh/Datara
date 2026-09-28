@@ -1,0 +1,40 @@
+name: Build
+
+on:
+  push:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libfontconfig-dev libxkbcommon-dev \
+            libwayland-dev libgl1-mesa-dev libxcb1-dev libxcb-util-dev \
+            libxkbcommon-x11-dev
+
+      - uses: jdx/mise-action@v3
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release -p datara
+
+      # Binary only for now; .desktop file and icon are added in Phase 8.
+      - name: Package tarball
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "datara") | .version')
+          tar -czf "datara-${version}-x86_64-unknown-linux-gnu.tar.gz" \
+            -C target/release datara
+          echo "tarball=datara-${version}-x86_64-unknown-linux-gnu.tar.gz" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: datara-x86_64-unknown-linux-gnu
+          path: ${{ env.tarball }}

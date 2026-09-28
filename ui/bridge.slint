@@ -1,0 +1,264 @@
+/// Form fields for a new connection (Task 2.4).
+export struct ConnForm {
+    name: string,
+    host: string,
+    port: int,
+    database: string,
+    username: string,
+    password: string,
+    encryption: string, // "disabled" | "preferred" | "required"
+    trust-cert: bool,
+}
+
+
+/// One visible row of the schema tree (Task 3.1). `kind` is
+/// NodeKind::as_str: connection|database|folder-tables|folder-views|
+/// table|view|column|loading.
+export struct TreeNode {
+    id: int,
+    depth: int,
+    kind: string,
+    label: string,
+    has-children: bool,
+    expanded: bool,
+}
+
+/// One editor tab in the tab strip (Task 4.2). `id` is assigned by Rust's
+/// `EditorState`; `title` is the rendered label.
+export struct TabItem {
+    id: int,
+    title: string,
+}
+
+/// One syntax-highlight span, in *character cells* (not pixels): the editor
+/// turns `line`/`col` into x/y with its measured monospace metrics so the
+/// overlay stays aligned when the font size changes.
+export struct HighlightSpan {
+    text: string,
+    color: color,
+    line: int,
+    col: int,
+}
+
+/// One row in the command palette (Task 4.5). `command` is the palette tag
+/// `Bridge.palette-submit` hands to Rust — either a `PALETTE_COMMANDS` tag,
+/// `connect`, or `open-connection:<tree-node-id>`.
+export struct CommandItem {
+    label: string,
+    command: string,
+}
+/// One column header in the result grid (Task 5.2). `width` is pixels and
+/// live-updates while a resize handle is dragged.
+export struct GridCol {
+    name: string,
+    data-type: string,
+    width: int,
+}
+
+/// One cell of a grid row: display text plus the NULL flag for styling.
+export struct GridCell {
+    text: string,
+    is-null: bool,
+}
+
+/// One row of the result grid.
+export struct GridRow {
+    cells: [GridCell],
+}
+
+/// Rectangular cell selection in row/col indices (both ends inclusive).
+export struct GridSel {
+    r0: int,
+    c0: int,
+    r1: int,
+    c1: int,
+    active: bool,
+}
+
+/// One row in the query-history panel (Task 6.1). `query` is the first
+/// line of the recorded text, capped at 80 chars by Rust.
+export struct HistoryItem {
+    id: int,
+    query: string,
+    started-at: string,
+    duration: string,
+    rows: string,
+    ok: bool,
+}
+
+/// One row in the Saved tab of the history panel (Task 6.2). `query` is
+/// the first line of the saved text, capped at 80 chars by Rust.
+export struct SavedItem {
+    id: int,
+    name: string,
+    query: string,
+}
+
+
+
+
+/// Slint ↔ Tokio bridge. Callbacks fire on the UI thread and spawn work on
+/// the Tokio runtime; `in` properties are pushed back via
+/// `invoke_from_event_loop` (see bridge.rs). Grows in later tasks.
+export global Bridge {
+    callback new-connection(ConnForm);
+    callback test-connection(ConnForm);
+    /// Expand (lazy-load) or collapse a tree row.
+    callback toggle-node(int);
+    /// Double-click on a table/view row: resolve to preview SELECT (3.2).
+    callback open-table(int);
+    in property<[TreeNode]> tree;
+    in property<string> status;
+    in property<string> test-result;
+
+    // ── Editor (Task 4.2) ────────────────────────────────────────────
+    /// Editor buffer content. Pushed by Rust on tab switch / completion /
+    /// preview; bound two-way to the editor's TextInput.
+    in-out property<string> editor-text;
+    /// Font size (pt) from `[editor] font_size` in config.toml.
+    in property<int> editor-font-size;
+    /// Line count of `editor-text` for the gutter.
+    in property<int> line-count: 1;
+    /// "Ln X, Col Y" for the status bar.
+    in property<string> cursor-position;
+    /// Highlight spans for the overlay layer, in char cells.
+    in property<[HighlightSpan]> highlight-spans;
+    /// One-shot cursor placement after a programmatic text change
+    /// (completion apply, tab switch). The editor watches `changed` and
+    /// calls `set-selection-offsets(v, v)`.
+    in property<int> set-cursor;
+    /// Ctrl+K toggles the schema filter LineEdit over the sidebar.
+    in-out property<bool> schema-filter-visible;
+    /// Filter string applied to the schema tree (the sidebar LineEdit's
+    /// `edited` signal calls this on every keystroke). Empty restores the
+    /// full tree.
+    callback filter-tree(string);
+
+    // ── Command palette (Task 4.5) ──────────────────────────────────
+    in-out property<bool> palette-visible;
+    /// Palette LineEdit text; two-way so Rust can reset it on open.
+    in-out property<string> palette-query;
+    /// Fuzzy-filtered rows for the palette ListView; Rust rebuilds on
+    /// every `palette-edited`.
+    in property<[CommandItem]> palette-items;
+    /// Selected row — arrows in the palette LineEdit drive this.
+    in-out property<int> palette-index;
+    /// Palette query text changed; Rust refilters `palette-items`.
+    callback palette-edited(string);
+    /// Enter (or a row click): run `palette-items[palette-index].command`.
+    callback palette-submit();
+    /// Escape / click on the dim.
+    callback palette-close();
+    /// The "New connection" dialog. Rust sets it for the palette's
+    /// "Connect…" item; Slint writes false on close.
+    in-out property<bool> conn-dialog-visible;
+
+    // ── Result grid (Task 5.2) ───────────────────────────────────────
+    /// Column headers for the grid. Empty while no result is showing.
+    in property<[GridCol]> columns;
+    /// Result rows; ListView virtualizes over this model.
+    in property<[GridRow]> rows;
+    /// Total scrollable grid width in px (Σ column widths).
+    in property<int> grid-w;
+    /// Footer text: "N rows" / "N rows (truncated)" / "N rows affected" /
+    /// the error message.
+    in property<string> result-info;
+    /// Current rectangular cell selection (for delegate highlighting).
+    in property<GridSel> selection;
+    /// Sorted column + direction for the header indicator (-1 = none).
+    in property<int> sort-col: -1;
+    in property<bool> sort-asc: true;
+    /// Click on a cell: set the selection anchor.
+    callback grid-select(row: int, col: int);
+    /// Drag over the grid: extend the selection head. `row` is the delegate
+    /// row + the mouse's row delta; `x` is the pointer's x within the row.
+    callback grid-drag(row: int, x: length);
+    /// Ctrl+C with the grid focused: copy the selection as TSV.
+    callback copy-selection();
+    /// Column-resize drag released: `delta` is the cumulative distance
+    /// from drag start (committed once so the live delegate survives).
+    callback resize-column(idx: int, delta: length);
+    /// Header clicked: toggle-sort that column.
+    callback sort-column(idx: int);
+
+    // ── Query history (Task 6.1) ─────────────────────────────────────
+    /// Bottom-pane panel visibility (Ctrl+Shift+F / History button).
+    in-out property<bool> history-visible;
+    /// Panel rows, newest first — pushed by Rust on search/open/refresh.
+    in property<[HistoryItem]> history-items;
+    /// Two-way bound to the panel's filter LineEdit so Rust-side
+    /// refreshes (delete, auto-refresh after execute) reuse the filter.
+    in-out property<string> history-query;
+    /// Filter text changed; Rust re-runs the search.
+    callback history-search(string);
+    /// Load the entry's query into a new tab and execute it.
+    callback history-rerun(int);
+    /// Copy the entry's full query text to the clipboard.
+    callback history-copy(int);
+    /// Delete the entry, then refresh the list.
+    callback history-delete(int);
+    /// Ctrl+Shift+F / History button: toggle the panel (Rust owns the
+    /// open-search refresh — `changed` watchers aren't reliable here).
+    callback history-toggle();
+
+    // ── Saved queries (Task 6.2) ───────────────────────────────────────
+    /// Panel tab: 0 = History, 1 = Saved. Drives which list the filter
+    /// searches and which model the ListView shows.
+    in-out property<int> history-tab: 0;
+    /// Saved-query rows — pushed by Rust on saved-search/save/delete.
+    in property<[SavedItem]> saved-items;
+    /// Filter text changed while the Saved tab is active.
+    callback saved-search(string);
+    /// Ctrl+S → save dialog's Save: persist `name` bound to the active
+    /// tab's full editor text.
+    callback save-query(string);
+    /// Load a saved query into a new editor tab — no auto-execute (unlike
+    /// history-rerun; saved queries open for editing).
+    callback saved-open(int);
+    /// Delete the saved query, then refresh the list.
+    callback saved-delete(int);
+    /// The save-query dialog. Rust sets it for Ctrl+S / palette "Save
+    /// query"; Slint writes false on close.
+    in-out property<bool> save-dialog-visible;
+    /// Current completion candidates; non-empty shows the popup.
+    in property<[string]> completions;
+    /// Selected row in the completion popup. In-out so the popup's own
+    /// TouchArea can pick a row without a Rust round-trip.
+    in-out property<int> completion-index;
+    /// Text changed; `cursor` is the caret's UTF-8 byte offset at that
+    /// moment (used for the completion prefix).
+    callback editor-changed(text: string, cursor: int);
+    /// Caret/selection moved. `line`/`col` are 1-based char coordinates.
+    callback cursor-changed(cursor: int, anchor: int, line: int, col: int);
+    /// Keyboard command router. Returns true when the key was consumed —
+    /// used by the editor's `key-pressed` to decide `accept`/`reject`.
+    callback command(text: string, ctrl: bool, shift: bool, alt: bool) -> bool;
+    /// Popup keys: "accept" | "up" | "down" | "escape". Rust decides what
+    /// to do (nothing when the popup is hidden).
+    callback completion-action(string);
+
+    /// Tab key pressed: Rust inserts `[editor] tab_size` spaces at the
+    /// caret (TextInput has no insert API).
+    callback insert-tab();
+
+    // ── Workspace layout (Task 9.1) ─────────────────────────────────
+    /// Sidebar width in px — mirrored from MainWindow's drag handle,
+    /// persisted to `[workspace] sidebar_width` on close.
+    in-out property<int> sidebar-width: 240;
+    /// Editor pane share of the editor/grid split (0–1) — mirrored from
+    /// the split handle, persisted to `[workspace] editor_split`.
+    in-out property<float> editor-split: 0.5;
+
+    // ── Execution (Task 4.3) ─────────────────────────────────────────
+    /// Stop button: abort the query running on the active tab (or the only
+    /// running query when the user switched tabs mid-flight).
+    callback cancel-query();
+    /// Any tab has a query in flight — shows the Stop button.
+    in property<bool> query-running;
+    // ── Tabs (Task 4.2) ─────────────────────────────────────────────
+    in property<[TabItem]> tabs;
+    in property<int> active-tab;
+    callback new-tab();
+    callback close-tab(id: int);
+    callback switch-tab(id: int);
+}

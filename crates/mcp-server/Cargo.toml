@@ -1,0 +1,25 @@
+[package]
+name = "datara-mcp-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+datara-database.workspace = true
+datara-domain.workspace = true
+datara-storage.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlparser.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+secrecy.workspace = true
+tempfile.workspace = true

@@ -1,0 +1,22 @@
+[package]
+name = "datara-driver-mssql"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+datara-database.workspace = true
+datara-domain.workspace = true
+tiberius.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+time.workspace = true
+sqlparser.workspace = true
+futures-util.workspace = true
+async-trait.workspace = true
+secrecy.workspace = true
+
+[dev-dependencies]
+testcontainers.workspace = true

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Datara
+Comment=Native MSSQL database client
+Exec=datara
+Icon=io.github.ntxinh.Datara
+Terminal=false
+Categories=Development;Database;
+StartupWMClass=datara
+Keywords=sql;mssql;database;query;

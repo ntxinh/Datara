@@ -1,0 +1,154 @@
+import { Button, LineEdit, ListView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Bridge } from "../bridge.slint";
+
+
+
+/// Schema tree above a status line. Rows are a flat visible projection of
+/// the Rust-side `SchemaTree`; expand/collapse goes through
+/// `Bridge.toggle-node`.
+export component Sidebar inherits Rectangle {
+    /// Toolbar button pressed — the window opens the connection dialog.
+    callback new-connection-requested();
+
+    // Slint TouchArea has no double-click (1.18): a second click on the same
+    // table/view row within 400ms opens it. State lives on the root because
+    // delegates are rebuilt on every tree model swap.
+    property<duration> last-click-at: 0s;
+    property<int> last-click-id: 0;
+
+    /// Single-character stand-ins until an icon font lands (Task 8.x polish).
+    function kind-glyph(kind: string) -> string {
+        if kind == "connection" { return "⬡"; }
+        if kind == "database" { return "▣"; }
+        if kind == "folder-tables" { return "▤"; }
+        if kind == "folder-views" { return "▥"; }
+        if kind == "table" { return "▦"; }
+        if kind == "view" { return "◩"; }
+        if kind == "column" { return "–"; }
+        return "·";
+    }
+
+    width: 260px;
+    background: Theme.panel;
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 8px;
+
+        HorizontalLayout {
+            spacing: 4px;
+            Text {
+                text: "Connections";
+                color: Theme.fg;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+            Rectangle { }
+            Button {
+                text: "+ New";
+                clicked => {
+                    root.new-connection-requested();
+                }
+            }
+        }
+
+        // Ctrl+K toggles this filter box (Command::Search). `init` fires on
+        // conditional instantiation, so every Ctrl+K lands focus here;
+        // Escape clears + closes, Ctrl+K re-bubbles to the command router.
+        if Bridge.schema-filter-visible: filter-edit := LineEdit {
+            height: 28px;
+            placeholder-text: "Filter schema…";
+            init => {
+                self.focus();
+            }
+            edited => {
+                Bridge.filter-tree(self.text);
+            }
+            key-pressed(event) => {
+                if (event.text == Key.Escape) {
+                    Bridge.schema-filter-visible = false;
+                    Bridge.filter-tree("");
+                    return accept;
+                }
+                reject
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Theme.border;
+        }
+
+        if Bridge.schema-filter-visible && Bridge.tree.length == 0: Rectangle {
+            height: 22px;
+            Text {
+                x: 8px;
+                text: "No matches";
+                color: Theme.fg;
+                opacity: 0.5;
+                font-size: 12px;
+                font-italic: true;
+                vertical-alignment: center;
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Theme.border;
+        }
+
+        ListView {
+            vertical-stretch: 1;
+            for node in Bridge.tree: Rectangle {
+                height: 22px;
+                HorizontalLayout {
+                    padding-left: 6px + node.depth * 16px;
+                    spacing: 4px;
+                    Text {
+                        text: node.expanded ? "▼" : "▶";
+                        color: Theme.fg;
+                        opacity: node.has-children ? 0.7 : 0;
+                        font-size: 8px;
+                        width: 12px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: kind-glyph(node.kind);
+                        color: Theme.accent;
+                        width: 14px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: node.label;
+                        color: Theme.fg;
+                        font-italic: node.kind == "loading";
+                        opacity: node.kind == "loading" ? 0.5 : 1;
+                        font-size: 12px;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                }
+                TouchArea {
+                    clicked => {
+                        if (node.kind == "table" || node.kind == "view") &&
+                           node.id == root.last-click-id &&
+                           animation-tick() - root.last-click-at < 400ms {
+                            Bridge.open-table(node.id);
+                        } else {
+                            Bridge.toggle-node(node.id);
+                        }
+                        root.last-click-id = node.id;
+                        root.last-click-at = animation-tick();
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Theme.border;
+        }
+
+    }
+}

@@ -1,0 +1,5 @@
+# Mirrors mise.toml — keeps rustup/cargo/rust-analyzer aligned with the
+# project pin when mise shims aren't on PATH (IDEs, flatpak-builder, CI).
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]

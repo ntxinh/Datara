@@ -1,0 +1,83 @@
+import { Button, LineEdit } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Bridge } from "../bridge.slint";
+
+/// "Save query" dialog (Task 6.2), rendered as a dimmed overlay with a
+/// centered card — same pattern as ConnDialog. The name LineEdit is the
+/// only field; Save stays disabled while it's empty. The dialog dies with
+/// `save-dialog-visible = false`, so the name resets on every open.
+export component SaveQueryDialog inherits Rectangle {
+    /// Ask the parent to dismiss the overlay (Cancel/Escape, or after Save).
+    callback close-requested();
+
+    background: #00000088;
+
+    // Swallow clicks on the dim so they don't reach the window below.
+    TouchArea { }
+
+    VerticalLayout {
+        alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 380px;
+                background: Theme.panel;
+                border-color: Theme.border;
+                border-width: 1px;
+                border-radius: 8px;
+
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 8px;
+
+                    Text {
+                        text: "Save Query";
+                        color: Theme.fg;
+                        font-size: 16px;
+                        font-weight: 700;
+                    }
+
+                    name-edit := LineEdit {
+                        placeholder-text: "Query name";
+                        init => {
+                            self.focus();
+                        }
+                        accepted => {
+                            if (self.text != "") {
+                                Bridge.save-query(self.text);
+                                root.close-requested();
+                            }
+                        }
+                        key-pressed(event) => {
+                            if (event.text == Key.Escape) {
+                                root.close-requested();
+                                return accept;
+                            }
+                            reject
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: end;
+                        Button {
+                            text: "Save";
+                            primary: true;
+                            enabled: name-edit.text != "";
+                            clicked => {
+                                Bridge.save-query(name-edit.text);
+                                root.close-requested();
+                            }
+                        }
+                        Button {
+                            text: "Cancel";
+                            clicked => {
+                                root.close-requested();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,41 @@
+app-id: io.github.ntxinh.Datara
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: datara
+# Minimal permissions: Wayland (femtovg EGL), X11 fallback, session-bus is
+# narrowed to the Secret Service name (keyring), network for MSSQL.
+# No filesystem access — the sandbox maps XDG data/config/state into
+# ~/.var/app/io.github.ntxinh.Datara/{data,config,state} automatically.
+# device=dri: required for hardware GL; without it femtovg falls back to
+# software EGL (llvmpipe) — kept for a usable GUI.
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --share=network
+  - --talk-name=org.freedesktop.secrets
+modules:
+  - name: datara
+    buildsystem: simple
+    build-commands:
+      - . /usr/lib/sdk/rust-stable/enable.sh
+      - 'export CARGO_HOME="$PWD/cargo"'
+      - cargo build --release --offline --locked -p datara
+      - install -Dm755 target/release/datara /app/bin/datara
+      - install -Dm644 packaging/share/io.github.ntxinh.Datara.desktop
+          /app/share/applications/io.github.ntxinh.Datara.desktop
+      - install -Dm644 packaging/share/io.github.ntxinh.Datara.metainfo.xml
+          /app/share/metainfo/io.github.ntxinh.Datara.metainfo.xml
+      - install -Dm644 assets/icons/datara.svg
+          /app/share/icons/hicolor/scalable/apps/io.github.ntxinh.Datara.svg
+      - for size in 32 48 64 128 256 512; do install -Dm644
+          "assets/icons/datara-$size.png"
+          "/app/share/icons/hicolor/${size}x${size}/apps/io.github.ntxinh.Datara.png";
+          done
+    sources:
+      - type: dir
+        path: ../..
+      - cargo-sources.json

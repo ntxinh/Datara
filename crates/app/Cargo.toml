@@ -1,0 +1,38 @@
+[package]
+name = "datara"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+slint.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+datara-config.workspace = true
+datara-data-grid.workspace = true
+datara-database.workspace = true
+datara-mcp-server.workspace = true
+datara-domain.workspace = true
+datara-driver-mssql.workspace = true
+datara-secrets.workspace = true
+datara-sql-editor.workspace = true
+secrecy.workspace = true
+jiff.workspace = true
+datara-storage.workspace = true
+tokio.workspace = true
+parking_lot.workspace = true
+arboard.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true
+tempfile.workspace = true
+i-slint-backend-testing.workspace = true
+async-trait.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true

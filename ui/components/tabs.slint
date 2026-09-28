@@ -1,0 +1,80 @@
+import { Theme } from "../theme.slint";
+import { Bridge } from "../bridge.slint";
+
+/// Editor tab strip. Model + active tab live in Rust `EditorState`; this
+/// component is pure view: activate → `switch-tab`, ✕ → `close-tab`,
+/// + → `new-tab`.
+export component TabStrip inherits Rectangle {
+    height: 32px;
+    background: Theme.panel;
+
+    HorizontalLayout {
+        spacing: 0;
+
+        for tab in Bridge.tabs: Rectangle {
+            property<bool> active: tab.id == Bridge.active-tab;
+            width: max(90px, title.preferred-width + 44px);
+            background: active ? Theme.bg : transparent;
+
+            Rectangle {
+                y: 0;
+                height: 1px;
+                width: 100%;
+                background: active ? Theme.accent : Theme.border;
+            }
+            title := Text {
+                x: 10px;
+                text: tab.title;
+                color: Theme.fg;
+                opacity: active ? 1 : 0.6;
+                font-size: 12px;
+                vertical-alignment: center;
+                width: parent.width - 34px;
+                overflow: elide;
+            }
+            Text {
+                x: parent.width - 22px;
+                width: 18px;
+                text: "×";
+                color: Theme.fg;
+                opacity: close-ta.has-hover ? 1 : 0.4;
+                font-size: 13px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            TouchArea {
+                clicked => {
+                    Bridge.switch-tab(tab.id);
+                }
+            }
+            close-ta := TouchArea {
+                x: parent.width - 22px;
+                width: 18px;
+                height: 100%;
+                clicked => {
+                    Bridge.close-tab(tab.id);
+                }
+            }
+        }
+
+        // "+" new-tab button
+        Rectangle {
+            width: 30px;
+            Text {
+                text: "+";
+                color: Theme.fg;
+                opacity: new-ta.has-hover ? 1 : 0.5;
+                font-size: 14px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            new-ta := TouchArea {
+                clicked => {
+                    Bridge.new-tab();
+                }
+            }
+        }
+
+        Rectangle { horizontal-stretch: 1; }
+    }
+}

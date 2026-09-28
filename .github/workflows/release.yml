@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # `rpm` job builds the SRPM/binary RPM in a Fedora container and attaches
+  # them to the same release. Flatpak job builds bundle via flatpak-github-actions; tarball is interim.
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libfontconfig-dev libxkbcommon-dev \
+            libwayland-dev libgl1-mesa-dev libxcb1-dev libxcb-util-dev \
+            libxkbcommon-x11-dev
+
+      - uses: jdx/mise-action@v3
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release -p datara
+
+      - name: Package tarball
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "datara") | .version')
+          tar -czf "datara-${version}-x86_64-unknown-linux-gnu.tar.gz" \
+            -C target/release datara
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: datara-*-x86_64-unknown-linux-gnu.tar.gz
+
+  rpm:
+    runs-on: ubuntu-latest
+    container: fedora:44
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          dnf install -y rpm-build rust cargo git gcc-c++ pkgconf-pkg-config \
+            fontconfig-devel freetype-devel desktop-file-utils libappstream-glib
+
+      - name: Build RPM
+        run: make rpm
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: packaging/rpm/_build/{RPMS,SRPMS}/**/*.rpm
+  # Flatpak bundle via the official flatpak-github-actions action
+  # (formerly bilelmoussaoui/flatpak-github-actions). Builds the manifest
+  # with vendored cargo sources and publishes the bundle.
+  flatpak:
+    runs-on: ubuntu-latest
+    container:
+      image: bilelmoussaoui/flatpak-github-actions:freedesktop-25.08
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: flatpak/flatpak-github-actions@v8
+        with:
+          bundle: datara.flatpak
+          manifest-path: packaging/flatpak/io.github.ntxinh.Datara.yml
+          runtime-repo: https://flathub.org/repo/flathub.flatpakrepo
+          verbose: true
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: datara.flatpak

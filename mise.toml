@@ -1,0 +1,5 @@
+[tools]
+rust = { version = "1.98.1", components = ["rustfmt", "clippy"] }
+
+[settings]
+experimental = true

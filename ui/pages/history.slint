@@ -1,0 +1,234 @@
+import { Theme } from "../theme.slint";
+import { Bridge } from "../bridge.slint";
+import { LineEdit, ListView } from "std-widgets.slint";
+
+/// Small text button used for the per-row actions — the standard `Button`
+/// is too heavy for a 22px grid-style row.
+component RowBtn inherits Rectangle {
+    in property<string> label;
+    callback clicked();
+    width: label-t.preferred-width + 14px;
+    border-radius: 3px;
+    border-width: 1px;
+    border-color: Theme.border;
+    background: ta.pressed ? Theme.border
+        : ta.has-hover ? Theme.border.with-alpha(0.5) : transparent;
+    label-t := Text {
+        text: root.label;
+        color: Theme.fg;
+        font-size: 10px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+/// History | Saved tab label. `tab` is the index written to
+/// `Bridge.history-tab`; switching to Saved fires the refresh (`saved-search`
+/// with the shared filter text) — the same contract history-toggle uses.
+component PanelTab inherits Rectangle {
+    in property<string> label;
+    in property<int> tab;
+    property<bool> active: Bridge.history-tab == root.tab;
+    width: label-t.preferred-width + 16px;
+    border-radius: 3px;
+    background: active ? Theme.border : ta.has-hover ? Theme.border.with-alpha(0.5) : transparent;
+    label-t := Text {
+        text: root.label;
+        color: Theme.fg;
+        opacity: root.active ? 1 : 0.6;
+        font-size: 11px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    ta := TouchArea {
+        clicked => {
+            if (!root.active) {
+                Bridge.history-tab = root.tab;
+                if (root.tab == 1) {
+                    Bridge.saved-search(Bridge.history-query);
+                } else {
+                    Bridge.history-search(Bridge.history-query);
+                }
+            }
+        }
+    }
+}
+
+/// Query-history bottom pane (Tasks 6.1/6.2): a History|Saved tab strip
+/// over a filter LineEdit and a ListView. History rows get
+/// Rerun/Copy/Delete; saved rows get Open/Delete. Search runs on every
+/// keystroke — the LIKE queries are cheap over bounded tables.
+export component HistoryPanel inherits Rectangle {
+    background: Theme.panel;
+    height: 220px;
+
+    VerticalLayout {
+        padding: 6px;
+        spacing: 4px;
+
+        HorizontalLayout {
+            spacing: 4px;
+            height: 22px;
+            PanelTab { label: "History"; tab: 0; }
+            PanelTab { label: "Saved"; tab: 1; }
+        }
+
+        search := LineEdit {
+            height: 26px;
+            placeholder-text: Bridge.history-tab == 0 ? "Filter history…" : "Filter saved…";
+            text <=> Bridge.history-query;
+            init => {
+                self.focus();
+            }
+            edited => {
+                if (Bridge.history-tab == 0) {
+                    Bridge.history-search(self.text);
+                } else {
+                    Bridge.saved-search(self.text);
+                }
+            }
+            key-pressed(event) => {
+                if (event.text == Key.Escape) {
+                    Bridge.history-visible = false;
+                    return accept;
+                }
+                reject
+            }
+        }
+
+        // ── History tab ──────────────────────────────────────────────
+        if Bridge.history-tab == 0 && Bridge.history-items.length == 0: Rectangle {
+            vertical-stretch: 1;
+            Text {
+                text: "No history";
+                color: Theme.fg;
+                opacity: 0.5;
+                font-size: 12px;
+                font-italic: true;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        if Bridge.history-tab == 0 && Bridge.history-items.length > 0: ListView {
+            vertical-stretch: 1;
+            for item in Bridge.history-items: Rectangle {
+                height: 26px;
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 8px;
+
+                    Text {
+                        text: item.ok ? "✓" : "✗";
+                        color: item.ok ? #a6e3a1 : #f38ba8;
+                        font-size: 11px;
+                        width: 14px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: item.started-at;
+                        color: Theme.fg;
+                        opacity: 0.6;
+                        font-size: 11px;
+                        width: 118px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        horizontal-stretch: 1;
+                        text: item.query;
+                        color: Theme.fg;
+                        font-family: "monospace";
+                        font-size: 11px;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: item.duration;
+                        color: Theme.fg;
+                        opacity: 0.6;
+                        font-size: 11px;
+                        width: 52px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: item.rows;
+                        color: Theme.fg;
+                        opacity: 0.6;
+                        font-size: 11px;
+                        width: 64px;
+                        vertical-alignment: center;
+                    }
+                    RowBtn {
+                        label: "Rerun";
+                        clicked => { Bridge.history-rerun(item.id); }
+                    }
+                    RowBtn {
+                        label: "Copy";
+                        clicked => { Bridge.history-copy(item.id); }
+                    }
+                    RowBtn {
+                        label: "Delete";
+                        clicked => { Bridge.history-delete(item.id); }
+                    }
+                }
+            }
+        }
+
+        // ── Saved tab ────────────────────────────────────────────────
+        if Bridge.history-tab == 1 && Bridge.saved-items.length == 0: Rectangle {
+            vertical-stretch: 1;
+            Text {
+                text: "No saved queries";
+                color: Theme.fg;
+                opacity: 0.5;
+                font-size: 12px;
+                font-italic: true;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        if Bridge.history-tab == 1 && Bridge.saved-items.length > 0: ListView {
+            vertical-stretch: 1;
+            for item in Bridge.saved-items: Rectangle {
+                height: 26px;
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 8px;
+
+                    Text {
+                        text: item.name;
+                        color: Theme.fg;
+                        font-size: 11px;
+                        width: 160px;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        horizontal-stretch: 1;
+                        text: item.query;
+                        color: Theme.fg;
+                        opacity: 0.7;
+                        font-family: "monospace";
+                        font-size: 11px;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                    RowBtn {
+                        label: "Open";
+                        clicked => { Bridge.saved-open(item.id); }
+                    }
+                    RowBtn {
+                        label: "Delete";
+                        clicked => { Bridge.saved-delete(item.id); }
+                    }
+                }
+            }
+        }
+    }
+}

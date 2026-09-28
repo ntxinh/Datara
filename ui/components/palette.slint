@@ -1,0 +1,91 @@
+import { LineEdit, ListView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Bridge } from "../bridge.slint";
+
+/// Command palette (Ctrl+P). A dimmed overlay with a top-centered panel:
+/// a LineEdit bound to `Bridge.palette-query` over a ListView of
+/// `Bridge.palette-items`. All matching lives in Rust — this view only
+/// forwards edited/accepted and the navigation keys.
+export component Palette inherits Rectangle {
+    background: #00000088;
+
+    init => {
+        edit.focus();
+    }
+
+    // Click on the dim closes; clicks inside the panel are swallowed by
+    // the panel's own TouchArea.
+    TouchArea {
+        clicked => {
+            Bridge.palette-close();
+        }
+    }
+
+    Rectangle {
+        x: (parent.width - 560px) / 2;
+        y: 80px;
+        width: 560px;
+        height: panel-layout.preferred-height;
+        background: Theme.panel;
+        border-color: Theme.border;
+        border-width: 1px;
+        border-radius: 8px;
+        clip: true;
+
+        TouchArea { }
+
+        panel-layout := VerticalLayout {
+            padding: 8px;
+            spacing: 4px;
+
+            edit := LineEdit {
+                height: 32px;
+                placeholder-text: "Type a command…";
+                text <=> Bridge.palette-query;
+                edited => {
+                    Bridge.palette-edited(self.text);
+                }
+                accepted => {
+                    Bridge.palette-submit();
+                }
+                key-pressed(event) => {
+                    if (event.text == Key.Escape) {
+                        Bridge.palette-close();
+                        return accept;
+                    }
+                    if (event.text == Key.DownArrow) {
+                        Bridge.palette-index = min(Bridge.palette-index + 1, Bridge.palette-items.length - 1);
+                        return accept;
+                    }
+                    if (event.text == Key.UpArrow) {
+                        Bridge.palette-index = max(Bridge.palette-index - 1, 0);
+                        return accept;
+                    }
+                    reject
+                }
+            }
+
+            ListView {
+                height: min(Bridge.palette-items.length, 10) * 28px;
+                for item[i] in Bridge.palette-items: Rectangle {
+                    height: 28px;
+                    background: i == Bridge.palette-index ? Theme.accent.with-alpha(0.25) : transparent;
+                    border-radius: 4px;
+                    Text {
+                        x: 10px;
+                        text: item.label;
+                        color: Theme.fg;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                    }
+                    TouchArea {
+                        clicked => {
+                            Bridge.palette-index = i;
+                            Bridge.palette-submit();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,20 @@
+[package]
+name = "datara-database"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+datara-domain.workspace = true
+datara-storage.workspace = true
+datara-secrets.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+secrecy.workspace = true
+jiff.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

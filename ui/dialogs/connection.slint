@@ -1,0 +1,134 @@
+import { Button, CheckBox, ComboBox, LineEdit, SpinBox } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Bridge, ConnForm } from "../bridge.slint";
+
+/// "New connection" dialog, rendered as a dimmed overlay with a centered
+/// card. Save/Test are disabled until name and host are non-empty; the port
+/// is constrained to 1–65535 by the SpinBox bounds.
+export component ConnDialog inherits Rectangle {
+    /// Ask the parent to dismiss the overlay (Cancel, or after Save).
+    callback close-requested();
+
+    in property<bool> valid: name-edit.text != "" && host-edit.text != "";
+
+    background: #00000088;
+
+    function form() -> ConnForm {
+        return {
+            name: name-edit.text,
+            host: host-edit.text,
+            port: port-spin.value,
+            database: db-edit.text,
+            username: user-edit.text,
+            password: pass-edit.text,
+            encryption: enc-combo.current-value,
+            trust-cert: trust-check.checked,
+        };
+    }
+
+    // Swallow clicks on the dim so they don't reach the window below.
+    TouchArea { }
+
+    VerticalLayout {
+        alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 460px;
+                background: Theme.panel;
+                border-color: Theme.border;
+                border-width: 1px;
+                border-radius: 8px;
+
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 8px;
+
+                    Text {
+                        text: "New Connection";
+                        color: Theme.fg;
+                        font-size: 16px;
+                        font-weight: 700;
+                    }
+
+                    GridLayout {
+                        spacing: 8px;
+                        Row {
+                            Text { text: "Name"; color: Theme.fg; vertical-alignment: center; }
+                            name-edit := LineEdit { placeholder-text: "My server"; }
+                        }
+                        Row {
+                            Text { text: "Host"; color: Theme.fg; vertical-alignment: center; }
+                            host-edit := LineEdit { placeholder-text: "localhost"; }
+                        }
+                        Row {
+                            Text { text: "Port"; color: Theme.fg; vertical-alignment: center; }
+                            port-spin := SpinBox {
+                                minimum: 1;
+                                maximum: 65535;
+                                value: 1433;
+                            }
+                        }
+                        Row {
+                            Text { text: "Database"; color: Theme.fg; vertical-alignment: center; }
+                            db-edit := LineEdit { placeholder-text: "(optional)"; }
+                        }
+                        Row {
+                            Text { text: "Username"; color: Theme.fg; vertical-alignment: center; }
+                            user-edit := LineEdit { }
+                        }
+                        Row {
+                            Text { text: "Password"; color: Theme.fg; vertical-alignment: center; }
+                            pass-edit := LineEdit { input-type: password; }
+                        }
+                        Row {
+                            Text { text: "Encryption"; color: Theme.fg; vertical-alignment: center; }
+                            enc-combo := ComboBox {
+                                model: ["preferred", "required", "disabled"];
+                                current-index: 0;
+                            }
+                        }
+                        Row {
+                            Text { }
+                            trust-check := CheckBox { text: "Trust server certificate"; }
+                        }
+                    }
+
+                    Text {
+                        text: Bridge.test-result;
+                        color: Theme.fg;
+                        opacity: 0.8;
+                        wrap: word-wrap;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: end;
+                        Button {
+                            text: "Test";
+                            enabled: root.valid;
+                            clicked => {
+                                Bridge.test-connection(root.form());
+                            }
+                        }
+                        Button {
+                            text: "Save";
+                            primary: true;
+                            enabled: root.valid;
+                            clicked => {
+                                Bridge.new-connection(root.form());
+                                root.close-requested();
+                            }
+                        }
+                        Button {
+                            text: "Cancel";
+                            clicked => {
+                                root.close-requested();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
