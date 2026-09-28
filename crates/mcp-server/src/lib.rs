@@ -3,8 +3,10 @@
 //! wires storage, secrets, and the MSSQL driver, then calls
 //! [`serve_stdio`].
 //!
-//! Sessions are the service's pooled `ConnectionId`-keyed sessions, shared
-//! with the GUI process when both run — no second driver stack.
+//! MCP calls reuse the service's pooled `ConnectionId`-keyed sessions — the
+//! same pooling design the GUI uses, not a second driver stack. (Separate
+//! process, so pools aren't literally shared; connection caching applies
+//! per-process.)
 
 mod server;
 mod tools;

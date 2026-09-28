@@ -30,6 +30,18 @@ fn json_result(value: impl Serialize) -> Result<CallToolResult, McpError> {
 fn tool_err(e: impl std::fmt::Display) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(e.to_string())])
 }
+/// Wrap a row-producing result as `{ <name>: [...], truncated: bool }`,
+/// truncating to `max` first. Same convention `execute_query` uses via
+/// `QueryResult.truncated` — a capped list must not look complete.
+fn capped_result(
+    name: &'static str,
+    mut items: Vec<impl Serialize>,
+    max: usize,
+) -> Result<CallToolResult, McpError> {
+    let truncated = items.len() > max;
+    items.truncate(max);
+    json_result(serde_json::json!({ name: items, "truncated": truncated }))
+}
 
 /// `list_connections` output: the profile minus `secret_reference` and
 /// auth/encryption internals — nothing here can carry a password.
@@ -101,11 +113,13 @@ pub struct QueryArgs {
     /// Database name; defaults to the connection's configured database.
     pub database: Option<String>,
 }
+
 /// The `search_schema` metadata query: tables/views whose name contains
-/// `query`. `'` is the only char needing escape inside the LIKE literal;
-/// LIKE wildcards are left live as a feature.
+/// `query`. `'` is doubled for the SQL literal and `[` is escaped for LIKE
+/// (it would otherwise open a character class); `%`/`_` stay live as
+/// wildcards — a documented feature.
 pub(crate) fn search_sql(query: &str) -> String {
-    let needle = query.replace('\'', "''");
+    let needle = query.replace('\'', "''").replace('[', "[[]");
     format!(
         "SELECT s.name AS schema_name, o.name, CASE o.type WHEN 'V' THEN 'view' \
          ELSE 'table' END AS kind FROM sys.objects o JOIN sys.schemas s \
@@ -123,11 +137,13 @@ impl<D: DatabaseDriver + 'static> DataraMcp<D> {
     )]
     async fn list_connections(&self) -> Result<CallToolResult, McpError> {
         match self.storage.connections().list().await {
-            Ok(profiles) => json_result(
+            Ok(profiles) => capped_result(
+                "connections",
                 profiles
                     .into_iter()
                     .map(ConnectionSummary::from)
                     .collect::<Vec<_>>(),
+                self.max_rows,
             ),
             Err(e) => Ok(tool_err(e)),
         }
@@ -143,7 +159,7 @@ impl<D: DatabaseDriver + 'static> DataraMcp<D> {
             .list_databases(ConnectionId(args.conn_id))
             .await
         {
-            Ok(dbs) => json_result(dbs),
+            Ok(dbs) => capped_result("databases", dbs, self.max_rows),
             Err(e) => Ok(tool_err(e)),
         }
     }
@@ -158,7 +174,7 @@ impl<D: DatabaseDriver + 'static> DataraMcp<D> {
         match self.resolve_database(id, args.database.as_deref()).await {
             Err(e) => Ok(tool_err(e)),
             Ok(database) => match self.service.list_tables(&id, &database, &schema).await {
-                Ok(tables) => json_result(tables),
+                Ok(tables) => capped_result("tables", tables, self.max_rows),
                 Err(e) => Ok(tool_err(e)),
             },
         }
@@ -180,7 +196,16 @@ impl<D: DatabaseDriver + 'static> DataraMcp<D> {
                 .describe_table(&id, &database, &schema, &args.table)
                 .await
             {
-                Ok(desc) => json_result(desc),
+                Ok(mut desc) => {
+                    let truncated =
+                        desc.columns.len() > self.max_rows || desc.indexes.len() > self.max_rows;
+                    desc.columns.truncate(self.max_rows);
+                    desc.indexes.truncate(self.max_rows);
+                    json_result(serde_json::json!({
+                        "table": desc,
+                        "truncated": truncated,
+                    }))
+                }
                 Err(e) => Ok(tool_err(e)),
             },
         }
@@ -190,7 +215,7 @@ impl<D: DatabaseDriver + 'static> DataraMcp<D> {
     /// Runs through `session.execute` directly so the metadata lookup is not
     /// recorded in the user's query history.
     #[tool(
-        description = "Search table and view names containing `query` in a database. Returns [{schema, name, kind}]. SQL LIKE wildcards % and _ work in query."
+        description = "Search table and view names containing `query` in a database. Returns {tables: [{schema, name, kind}], truncated: bool}. SQL LIKE wildcards % and _ work in query; [ is escaped."
     )]
     async fn search_schema(
         &self,
@@ -228,7 +253,10 @@ impl<D: DatabaseDriver + 'static> DataraMcp<D> {
                         _ => None,
                     })
                     .collect();
-                json_result(tables)
+                json_result(serde_json::json!({
+                    "tables": tables,
+                    "truncated": result.truncated,
+                }))
             }
         }
     }
@@ -381,7 +409,7 @@ mod tests {
         }
     }
 
-    async fn mcp() -> (DataraMcp<StubDriver>, Arc<Storage>, tempfile::TempDir) {
+    async fn mcp_with(max_rows: usize) -> (DataraMcp<StubDriver>, Arc<Storage>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let storage = Arc::new(Storage::open(&dir.path().join("test.db")).await.unwrap());
         storage
@@ -403,10 +431,14 @@ mod tests {
             Arc::new(StubSecrets),
         ));
         (
-            DataraMcp::new(service, Arc::clone(&storage), 1000),
+            DataraMcp::new(service, Arc::clone(&storage), max_rows),
             storage,
             dir,
         )
+    }
+
+    async fn mcp() -> (DataraMcp<StubDriver>, Arc<Storage>, tempfile::TempDir) {
+        mcp_with(1000).await
     }
 
     #[tokio::test]
@@ -415,8 +447,9 @@ mod tests {
         let result = mcp.list_connections().await.unwrap();
         let json = tool_text(&result);
         let conns: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(conns[0]["name"], "it");
-        assert_eq!(conns[0]["port"], 1433);
+        assert_eq!(conns["connections"][0]["name"], "it");
+        assert_eq!(conns["connections"][0]["port"], 1433);
+        assert_eq!(conns["truncated"], false);
         // The whole payload must not mention secrets at all.
         assert!(!json.contains("secret"));
     }
@@ -462,9 +495,23 @@ mod tests {
             .unwrap();
         let json = tool_text(&result);
         assert!(search_sql("us'er").contains("us''er"));
-        // Fixed stub row maps to a TableInfo.
+        assert!(search_sql("a[b").contains("a[[]b"));
+        // Fixed stub row maps to a TableInfo under `tables`.
         assert!(json.contains("users"));
         assert!(json.contains("dbo"));
+    }
+
+    #[tokio::test]
+    async fn row_tools_report_truncation() {
+        // Stub returns 2 databases; cap at 1 → truncated flag must surface.
+        let (mcp, _s, _d) = mcp_with(1).await;
+        let result = mcp
+            .list_databases(Parameters(ConnectionArgs { conn_id: 1 }))
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_str(&tool_text(&result)).unwrap();
+        assert_eq!(json["databases"].as_array().unwrap().len(), 1);
+        assert_eq!(json["truncated"], true);
     }
 
     #[tokio::test]

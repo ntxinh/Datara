@@ -76,7 +76,10 @@ impl<D: DatabaseDriver + 'static> Clone for DataraMcp<D> {
 impl<D: DatabaseDriver + 'static> ServerHandler for DataraMcp<D> {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::from_build_env())
+            .with_server_info(Implementation::new(
+                "datara-mcp-server",
+                env!("CARGO_PKG_VERSION"),
+            ))
             .with_instructions(
                 "Datara: MSSQL inspection and queries. Tools: list_connections, \
              list_databases, list_tables, describe_table, search_schema, \
