@@ -25,6 +25,15 @@ impl Storage {
             .connect_with(options)
             .await
             .map_err(storage_err)?;
+        // The DB carries profile metadata (hosts, usernames, secret refs);
+        // tighten the file regardless of the process umask. No-op for the
+        // rare non-Unix target.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .map_err(storage_err)?;
+        }
         sqlx::migrate!("./migrations")
             .run(&pool)
             .await

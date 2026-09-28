@@ -16,19 +16,21 @@ with a Slint UI. TablePlus-style: fast, keyboard-first, no Electron.
 |---|---|
 | Workspace, domain types, config, storage, minimal window | ✅ done |
 | Wayland launch (app_id `datara`; packaging ID `io.github.ntxinh.Datara`) | ✅ done |
-| MSSQL connection over TDS 7.3 (Tiberius) | 🚧 planned (phase 2) |
-| Passwords via Secret Service (GNOME Keyring) | 🚧 planned (phase 2) |
-| TLS modes with explicit certificate policy | 🚧 planned (phase 2) |
-| Schema explorer (databases → schemas → tables → columns) | 🚧 planned (phase 3) |
-| SQL editor: highlighting, statement detection, Ctrl+Enter | 🚧 planned (phase 4) |
-| Virtualized data grid with copy/export | 🚧 planned (phase 5) |
-| Query history in local SQLite | 🚧 planned (phase 6) |
-| MCP server (stdio) for agentic clients | ✅ working |
-| RPM and Flatpak packaging | 🚧 planned (phase 8) |
+| MSSQL connection over TDS 7.3 (Tiberius) | ✅ done |
+| Passwords via Secret Service (GNOME Keyring) | ✅ done |
+| TLS modes with explicit certificate policy | ✅ done |
+| Schema explorer (databases → schemas → tables → columns) | ✅ done |
+| SQL editor: highlighting, statement detection, Ctrl+Enter | ✅ done |
+| Virtualized data grid with copy/export | ✅ done |
+| Query history in local SQLite | ✅ done |
+| MCP server (stdio) for agentic clients | ✅ done |
+| RPM and Flatpak packaging | ✅ done |
 
 ## Install
 
-Packaging is pending (phase 8). For now, run from source — see below.
+From source (below) or via packaging artifacts — see
+`docs/packaging/rpm.md` and `docs/packaging/flatpak.md`. A desktop entry
+plus AppStream metadata install under the standard `/usr/share` paths.
 
 ## Development
 
@@ -63,20 +65,22 @@ Setup: `docs/integrations/mcp.md`.
 
 ## Project status
 
-**Early development.** Phase 1 (foundation) is complete: the workspace,
-domain types, XDG config, SQLite storage, driver traits, and a minimal Slint
-window exist and build. Nothing beyond that works yet.
+**MVP complete.** All nine phases shipped: MSSQL connections over TLS with
+Secret Service credentials, schema explorer, SQL editor with highlighting
+and async execution, virtualized results grid, query history and saved
+queries, a stdio MCP server, and RPM/Flatpak packaging. See `SECURITY.md`
+for the disclosure policy.
 
 ## Roadmap
 
 1. Foundation — workspace, tooling, docs, minimal window ✅
-2. Database — MSSQL driver, Secret Service, TLS, connection UI
-3. Schema explorer
-4. SQL editor — highlighting, execution, cancellation
-5. Data grid — virtualization, copy, formatting
-6. Query history
-7. MCP server (stdio)
-8. Packaging — RPM, Flatpak, desktop integration
-9. Hardening — lint/audit gates, benchmarks, security review
+2. Database — MSSQL driver, Secret Service, TLS, connection UI ✅
+3. Schema explorer ✅
+4. SQL editor — highlighting, execution, cancellation ✅
+5. Data grid — virtualization, copy, formatting ✅
+6. Query history ✅
+7. MCP server (stdio) ✅
+8. Packaging — RPM, Flatpak, desktop integration ✅
+9. Hardening — lint/audit gates, benchmarks, security review ✅
 
 Details: `DESIGN.md`, `docs/`, `docs/superpowers/specs/`.

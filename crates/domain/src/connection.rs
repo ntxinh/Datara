@@ -79,4 +79,25 @@ mod tests {
         assert!(dbg.contains("***"));
         assert!(!dbg.contains("hunter2"));
     }
+
+    /// Invariant: a serialized `ConnectionProfile` exposes the secret
+    /// reference only — there is no `password` key and no secret material.
+    #[test]
+    fn connection_profile_json_carries_reference_not_secret() {
+        let profile = ConnectionProfile {
+            id: ConnectionId(7),
+            name: "prod".into(),
+            host: "db.internal".into(),
+            port: 1433,
+            database: Some("appdb".into()),
+            username: "sa".into(),
+            authentication: AuthenticationMode::SqlPassword,
+            encryption: EncryptionMode::Preferred,
+            trust_server_certificate: false,
+            secret_reference: SecretReference("mssql/7/password".into()),
+        };
+        let v = serde_json::to_value(&profile).unwrap();
+        assert_eq!(v["secret_reference"], "mssql/7/password");
+        assert!(v.get("password").is_none());
+    }
 }

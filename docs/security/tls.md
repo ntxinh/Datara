@@ -1,16 +1,29 @@
 # TLS
 
-Connections to SQL Server use rustls through Tiberius. `EncryptionMode`
-offers three settings per profile:
+Connections to SQL Server use rustls through Tiberius (`tds73` feature).
+`EncryptionMode` is a per-profile setting with three values, mapped in
+`crates/driver-mssql/src/driver.rs`:
 
-- `Disabled` — plaintext (explicit user choice, e.g. local dev containers)
-- `Preferred` — encrypt if the server supports it (default)
-- `Required` — refuse unencrypted connections
+| `encryption` | Tiberius `EncryptionLevel` | Behavior |
+|---|---|---|
+| `disabled` | `Off` | No session encryption. Tiberius still encrypts the login packet, so the password never travels in clear text; everything after login is plaintext. Explicit user choice — for trusted local/dev instances only. |
+| `preferred` | `On` | Encrypt if the server supports it; fall back to unencrypted otherwise (excluding the always-encrypted login packet). Default. |
+| `required` | `Required` | Refuse the connection unless the full session is encrypted. |
 
-TLS is never silently downgraded: certificate and handshake failures surface
-as `DomainError::Tls` with the underlying error. `trust_server_certificate`
-is a per-profile boolean the user sets deliberately — it is not a fallback
-after a validation failure.
+`trust_server_certificate` is an orthogonal per-profile boolean:
 
-**Implemented:** `EncryptionMode` and `trust_server_certificate` on
-`ConnectionProfile`. **Pending:** driver wiring — phase 2 (task 2.2).
+| `trust_server_certificate` | Effect |
+|---|---|
+| `false` (default) | rustls validates the server certificate chain and hostname. Validation failure aborts the connection. |
+| `true` | `config.trust_cert()`: accept any certificate. Only meaningful when TLS is negotiated; protects nothing — appropriate for dev containers with self-signed certs. |
+
+Combined semantics: `disabled` + `trust` is a no-op (no TLS to verify).
+`preferred` + `trust` encrypts opportunistically but never verifies.
+`required` + `trust` gives encryption without authentication — still
+vulnerable to MITM; use only deliberately.
+
+**No silent downgrade of verification:** Datara never retries a failed
+handshake with verification off. Certificate and handshake failures
+surface as `DomainError::Tls` with the underlying rustls/Tiberius
+message, so the user sees *why* the connection failed and must flip
+`trust_server_certificate` themselves in the connection dialog.

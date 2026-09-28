@@ -9,9 +9,8 @@ single binary `datara`, GPL-3.0, app ID `io.github.ntxinh.Datara`. Cargo
 workspace of `datara-*` crates under `crates/`; declarative UI in `ui/`.
 Rust `1.98.1` is pinned by `mise.toml`.
 
-Current state: **foundation phase**. Domain types, config, storage, driver
-traits and a minimal window exist; no driver, editor, grid, or MCP yet. Write
-docs and code for what exists — mark planned work as planned.
+Current state: **MVP complete**. All crates and features are implemented.
+Write docs and code for what exists — mark planned work as planned.
 
 ## Architecture rules (non-negotiable)
 
@@ -45,6 +44,7 @@ make check            # cargo check --workspace
 make audit            # cargo audit
 make deny             # cargo deny check
 make docs-check       # verify docs/README.md index integrity
+make rpm / flatpak    # packaging builds (see Makefile comments for deps)
 ```
 
 ## Coding conventions

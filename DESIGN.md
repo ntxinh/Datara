@@ -1,10 +1,8 @@
 # Datara — Design
 
-Architecture of Datara as designed for the full MVP. **Status markers**
-throughout: *(implemented)* means the code exists today; *(designed — phase
-N)* means the contract is settled but the code does not. The design is fixed
-by `docs/superpowers/specs/2026-09-27-datara-design.md`; this document
-describes it for engineers.
+Architecture of Datara as shipped for the MVP. All phases are implemented;
+the **Deviations** section at the end lists where the shipped code differs
+from `docs/superpowers/specs/2026-09-27-datara-design.md`.
 
 ## 1. System architecture
 
@@ -40,14 +38,14 @@ Ten crates under `crates/`, named `datara-<layer>`:
 
 | Crate | Role | State |
 |---|---|---|
-| `app` | CLI (clap), Slint bridge, service wiring, `mcp-serve` entry | skeleton *(implemented: GUI launch, MCP stub exits 2)* |
+| `app` | CLI (clap), Slint bridge, service wiring, `mcp-serve` entry | *(implemented)* |
 | `domain` | `ConnectionProfile`, `QueryResult`, `Value`, `DomainError`, `Command` | *(implemented)* |
-| `database` | `DatabaseDriver`/`DatabaseSession` traits, `DatabaseService` | traits *(implemented)*; service *designed — phase 2* |
-| `driver-mssql` | Tiberius implementation of the traits | *designed — phase 2* |
-| `sql-editor` | Statement detection (sqlparser), highlighting, completion | *designed — phase 4* |
-| `data-grid` | `RowCache`, virtualized row model | *designed — phase 5* |
-| `secrets` | Secret Service store | *designed — phase 2* |
-| `mcp-server` | rmcp stdio server + tools | *designed — phase 7* |
+| `database` | `DatabaseDriver`/`DatabaseSession` traits, `DatabaseService` | *(implemented)* |
+| `driver-mssql` | Tiberius implementation of the traits | *(implemented)* |
+| `sql-editor` | Statement detection (sqlparser), highlighting, completion | *(implemented)* |
+| `data-grid` | `RowCache`, virtualized row model | *(implemented)* |
+| `secrets` | Secret Service store | *(implemented)* |
+| `mcp-server` | rmcp stdio server + tools | *(implemented)* |
 | `storage` | SQLite repos: connections, history, saved queries | *(implemented)* |
 | `config` | XDG paths (`AppPaths`), TOML settings (`AppConfig`) | *(implemented)* |
 
@@ -89,8 +87,8 @@ names the driver.
   `crates/app/src/` (callbacks → commands → `DatabaseService` on Tokio).
 - Keyboard-first: a `Command` enum (in `domain`) is the single source of
   shortcut bindings; components never hard-code keys.
-- Currently: `ui/app.slint` is a single placeholder window proving the
-  Wayland launch path *(implemented)*; `theme.slint` defines the
+- `ui/app.slint` hosts the full shell — sidebar schema tree, editor tabs,
+  results grid, dialogs — *(implemented)*; `theme.slint` defines the
   dark/light palette *(implemented)*.
 
 ## 4. Database architecture
@@ -99,17 +97,18 @@ names the driver.
 expose `list_databases`, `list_schemas`, `list_tables`, `describe_table`,
 `execute(database, query, max_rows)`, `cancel`, `quote_ident`. `list_*` takes
 a database because MSSQL metadata requires a database context; `execute`
-takes `max_rows` so drivers must cap materialization. Traits are
-*(implemented)* in `datara-database`; the `DatabaseService` that owns a
-session-per-connection map and enforces cancellation is *designed — phase 2*.
+takes `max_rows` so drivers must cap materialization. Traits and the
+`DatabaseService` — session-per-connection pool, cancellation, history
+recording — are *(implemented)* in `datara-database`.
 
 ## 5. MSSQL driver
 
 Tiberius 0.13 over TDS 7.3 with the rustls TLS backend. One Tokio TCP stream
-per session; `cancel` issues an attention packet on the same connection.
-`quote_ident` uses `[brackets]` with `]` escaped as `]]`. Value conversion
-maps TDS types onto `domain::Value` (Null/Bool/Int/Float/Decimal/Text/Bytes/
-DateTime/Uuid). *Designed — phase 2.*
+per session; `cancel` aborts the in-flight execute task, dropping the stream
+(attention-packet cancellation is a noted upgrade). `quote_ident` uses
+`[brackets]` with `]` escaped as `]]`. Value conversion maps TDS types onto
+`domain::Value` (Null/Bool/Int/Float/Decimal/Text/Bytes/DateTime/Uuid).
+*(Implemented).*
 
 ## 6. SQL editor
 
@@ -117,15 +116,14 @@ DateTime/Uuid). *Designed — phase 2.*
 with MSSQL dialect, byte-range output), tokenizer-based highlighting, and a
 small completion provider. The Slint editor component calls `ExecuteQuery` on
 Ctrl+Enter via the command system; execution never blocks the UI thread.
-*Designed — phase 4.*
+*(Implemented).*
 
 ## 7. Data grid
 
 `datara-data-grid` holds a `RowCache` keyed by row index plus a
 `VirtualizedRows` model exposing only the viewport window to Slint — no
-per-cell components. Target: responsive at tens of thousands of rows. Copy
-cell/row/selection via clipboard; NULL renders as `NULL`. *Designed —
-phase 5.*
+per-cell components. Responsive at tens of thousands of rows. Copy
+cell/row/selection via clipboard; NULL renders as `NULL`. *(Implemented).*
 
 ## 8. Secrets
 
@@ -133,25 +131,24 @@ Passwords live only in the Secret Service API (GNOME Keyring; visible in
 Seahorse). `ConnectionProfile` stores a `SecretReference` like
 `mssql/7/password`; the actual secret is fetched at connect time and wrapped
 in `secrecy::SecretString` so it cannot appear in `Debug`/`Display`/`serde`
-output or error messages. *Designed — phase 2* (the `SecretReference` type is
-implemented in domain).
+output or error messages. The `datara-secrets` store and the domain types
+are *(implemented)*.
 
 ## 9. TLS
 
 `EncryptionMode::{Disabled, Preferred, Required}` maps onto Tiberius config.
 Never silently downgraded: certificate errors surface to the user;
 `trust_server_certificate` is a per-profile, user-visible boolean, not a
-fallback. *Designed — phase 2.*
+fallback. *(Implemented)* — full matrix in `docs/security/tls.md`.
 
 ## 10. MCP server
 
 `datara mcp-serve` runs an rmcp server over stdio only — no network
 transport. Tools: `list_connections`, `list_databases`, `list_tables`,
 `describe_table`, `search_schema`, `execute_query`. Every query tool takes an
-explicit `connection_id` and `database`; results cap at
-`mcp.max_result_rows` (default 1000) and report `truncated`. The server
-resolves credentials the same way the GUI does and never returns secrets.
-*Designed — phase 7.*
+explicit `conn_id`; results cap at `mcp.max_result_rows` (default 1000) and
+report `truncated`. The server resolves credentials the same way the GUI
+does and never returns secrets. *(Implemented).*
 
 ## 11. Local storage
 
@@ -183,16 +180,17 @@ errors implemented.)*
 
 One Tokio multi-thread runtime for the process. All database I/O runs on it;
 the Slint UI thread never blocks — bridge calls spawn tasks and deliver
-results back via `slint::invoke_from_event_loop`. Cancellation: each running
-query holds a session handle; `cancel()` sends TDS attention. Async is used
-only for real I/O. *Runtime wiring designed — phase 2.*
+results back via `slint::invoke_from_event_loop`. Cancellation aborts the
+execute `JoinHandle`, dropping the TCP stream (see Deviations). Async is
+used only for real I/O. *(Implemented).*
 
 ## 15. Performance
 
 - Grid renders only the viewport; rows stream into `RowCache` incrementally.
 - `execute` caps at `max_rows` at the driver, not the UI.
-- Benchmarks (startup, schema load, result processing, grid scroll) via
-  criterion — *phase 9*.
+- Benchmarks (statement splitting, highlighting, grid viewport, row
+  conversion, startup proxy) via criterion — *(implemented)*, baselines in
+  `docs/development/performance.md`.
 
 ## 16. Security
 
@@ -204,8 +202,30 @@ MCP stdio-only with explicit connection scoping (§10). `cargo-audit` and
 ## 17. Packaging
 
 - **RPM:** `packaging/rpm/datara.spec`, cargo build in `%build`, standard
-  Fedora paths. *Designed — phase 8.*
+  Fedora paths; `rpmbuild -ba` verified in a fedora:44 container. *(Implemented).*
 - **Flatpak:** `io.github.ntxinh.Datara.yml` + vendored `cargo-sources.json`;
   minimal permissions — Wayland, Secret Service (session bus), network.
-  *Designed — phase 8.*
-- Desktop entry + AppStream metainfo in `packaging/share/`.
+  *(Implemented; CI exercises the sandbox build.)*
+- Desktop entry + AppStream metainfo in `packaging/share/`. *(Implemented.)*
+
+## 18. Deviations from the spec
+
+Deliberate deltas between `docs/superpowers/specs/2026-09-27-datara-design.md`
+and the shipped code:
+
+- **Test layout:** the top-level `tests/` carries only a `README.md`; real
+  integration tests live in `crates/driver-mssql/tests/` and
+  `crates/mcp-server/tests/` because `cargo test --workspace` only
+  discovers member-package targets.
+- **`saved_queries` ships in `0001_init.sql`** — no second migration was
+  needed for the history/saved-queries phase.
+- **Editor highlight fallback:** the Task 4.2 overlay renders per-token
+  spans; a single-color + gutter fallback exists if per-token `Text`
+  alignment drifts.
+- **`mcp.enabled` defaults to `false`** (safe default per spec §17);
+  `datara mcp-serve` refuses cleanly until it is set.
+- **Cancellation is abort-via-drop:** `cancel()` aborts the execute
+  `JoinHandle`, dropping the TCP stream. TDS attention-message
+  cancellation is a documented upgrade, noted in `service.rs`.
+- **Ctrl+K maps to the schema-tree filter** (the spec's generic "Search");
+  Ctrl+P opens the command palette.

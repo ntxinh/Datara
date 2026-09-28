@@ -194,6 +194,22 @@ fn history_entry_has_no_credential_field() {
     );
 }
 
+/// The SQLite file holds profile metadata; `Storage::open` must pin it to
+/// owner-only `0600` regardless of umask.
+#[cfg(unix)]
+#[tokio::test]
+async fn db_file_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("app.db");
+    let _storage = Storage::open(&path).await.unwrap();
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
 /// `SavedRepo` round-trip: save → list → get → delete keeps name and query
 /// text intact.
 #[tokio::test]

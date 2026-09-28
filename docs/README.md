@@ -2,7 +2,7 @@
 
 Index of the `docs/` tree. Every path below is verified by `make docs-check`.
 Top-level docs live in the repo root: `../README.md`, `../DESIGN.md`,
-`../AGENTS.md`, `../CONTRIBUTING.md`.
+`../AGENTS.md`, `../CONTRIBUTING.md`, `../SECURITY.md`.
 
 ## Architecture
 
