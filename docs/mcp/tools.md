@@ -35,6 +35,9 @@ carry connection strings, so `allow_writes = false` refuses them. SQL the
 parser cannot read is likewise refused — the parser never vouches for what
 it couldn't parse. (Expression-level subqueries in `WHERE`/select lists are
 not walked; T-SQL forbids writes there anyway, so no bypass exists.)
+  Caveat: deprecated `FROM t (NOLOCK)` hints (parens without `WITH`) parse as
+  a table-function call and are likewise refused — canonical
+  `FROM t WITH (NOLOCK)` is unaffected.
 
 Errors surface as tool-level error content (`isError: true`) rather than
 JSON-RPC errors, so the model can read the message and react.
