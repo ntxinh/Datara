@@ -107,6 +107,19 @@ impl Default for WorkspaceState {
     }
 }
 
+impl WorkspaceState {
+    /// Clamp persisted layout to the same bounds the .slint drag handles
+    /// enforce (app.slint) — a hand-edited config can't wedge the layout.
+    fn clamp(&mut self) {
+        self.sidebar_width = self.sidebar_width.clamp(160, 480);
+        self.editor_split = if self.editor_split.is_finite() {
+            self.editor_split.clamp(0.15, 0.85)
+        } else {
+            0.5
+        };
+    }
+}
+
 /// Root application configuration, deserialized from `config.toml`.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
@@ -137,9 +150,11 @@ impl AppConfig {
         let text = std::fs::read_to_string(&file).map_err(|e| DomainError::Config {
             message: format!("cannot read {}: {e}", file.display()),
         })?;
-        toml::from_str(&text).map_err(|e| DomainError::Config {
+        let mut cfg: Self = toml::from_str(&text).map_err(|e| DomainError::Config {
             message: format!("invalid TOML in {}: {e}", file.display()),
-        })
+        })?;
+        cfg.workspace.clamp();
+        Ok(cfg)
     }
 
     /// Writes the full config back to `paths.config_file()` — used by the
@@ -153,9 +168,22 @@ impl AppConfig {
         })?;
         std::fs::write(&file, text).map_err(|e| DomainError::Config {
             message: format!("cannot write {}: {e}", file.display()),
-        })
+        })?;
+        // config.toml persists open_tabs (raw SQL) — same hardening as
+        // app.db. No-op off Unix.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).map_err(
+                |e| DomainError::Config {
+                    message: format!("cannot chmod {}: {e}", file.display()),
+                },
+            )?;
+        }
+        Ok(())
     }
 }
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -299,5 +327,47 @@ mod tests {
         assert_eq!(back.workspace.open_tabs, ["select 1"]);
         // User settings ride along untouched.
         assert_eq!(back.editor.font_size, 14);
+    }
+
+    /// Hand-edited out-of-range layout values clamp to the .slint drag
+    /// bounds (160–480 px sidebar, 0.15–0.85 split) instead of wedging
+    /// the window.
+    #[rstest]
+    fn out_of_range_workspace_clamps_on_load() {
+        let dir = TempDir::new().unwrap();
+        let paths = paths_in(&dir);
+        write_config(
+            &paths,
+            "[workspace]\nsidebar_width = 99999\neditor_split = 4.5\n",
+        );
+        let cfg = AppConfig::load(&paths).unwrap();
+        assert_eq!(cfg.workspace.sidebar_width, 480);
+        assert_eq!(cfg.workspace.editor_split, 0.85);
+
+        write_config(
+            &paths,
+            "[workspace]\nsidebar_width = 0\neditor_split = -1.0\n",
+        );
+        let cfg = AppConfig::load(&paths).unwrap();
+        assert_eq!(cfg.workspace.sidebar_width, 160);
+        assert_eq!(cfg.workspace.editor_split, 0.15);
+    }
+
+    /// open_tabs persists raw SQL — config.toml must land 0600 like app.db.
+    #[rstest]
+    #[cfg(unix)]
+    fn save_tightens_config_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let paths = paths_in(&dir);
+        fs::create_dir_all(paths.config_file().parent().unwrap()).unwrap();
+        AppConfig::default().save(&paths).unwrap();
+        let mode = fs::metadata(paths.config_file())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
     }
 }
