@@ -12,9 +12,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Phase 8: add `rpm` and `flatpak` jobs alongside this one
-  # (cargo-generate-rpm / flatpak-builder + their system deps), then attach
-  # those artifacts to the same release. Tarball is the interim artifact.
+  # `rpm` job builds the SRPM/binary RPM in a Fedora container and attaches
+  # them to the same release. Flatpak is still pending; tarball is interim.
   package:
     runs-on: ubuntu-latest
     steps:
@@ -44,3 +43,24 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: datara-*-x86_64-unknown-linux-gnu.tar.gz
+
+  rpm:
+    runs-on: ubuntu-latest
+    container: fedora:44
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          dnf install -y rpm-build rust cargo git gcc-c++ pkgconf-pkg-config \
+            fontconfig-devel freetype-devel desktop-file-utils libappstream-glib
+
+      - name: Build RPM
+        run: make rpm
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: packaging/rpm/_build/{RPMS,SRPMS}/**/*.rpm
