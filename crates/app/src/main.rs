@@ -3,6 +3,7 @@ mod commands;
 mod editor_ui;
 mod grid;
 mod history_ui;
+mod mcp_main;
 mod saved_ui;
 mod schema_tree;
 mod services;
@@ -31,10 +32,7 @@ enum Cmd {
 fn main() -> anyhow::Result<()> {
     match Cli::parse().command.unwrap_or(Cmd::Gui) {
         Cmd::Gui => run_gui(),
-        Cmd::McpServe => {
-            eprintln!("mcp-serve: not yet implemented");
-            std::process::exit(2);
-        }
+        Cmd::McpServe => Ok(services::spawn_runtime()?.block_on(mcp_main::run())?),
     }
 }
 

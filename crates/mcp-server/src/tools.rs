@@ -1,0 +1,509 @@
+//! Tool implementations. Each `#[tool]` method maps one MCP tool onto a
+//! [`DatabaseService`] call and returns the domain type serialized as a
+//! JSON text block; errors surface as tool-level error content so the
+//! model sees the message rather than a transport failure.
+
+use datara_database::DatabaseDriver;
+use datara_domain::{ConnectionId, ConnectionProfile, TableInfo, TableKind, Value};
+use rmcp::{
+    handler::server::wrapper::Parameters,
+    model::{CallToolResult, ContentBlock},
+    tool, tool_router, ErrorData as McpError,
+};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use crate::server::{cap_rows, DataraMcp, DEFAULT_SCHEMA};
+
+/// Serialize `value` as a JSON text block.
+fn json_result(value: impl Serialize) -> Result<CallToolResult, McpError> {
+    match serde_json::to_string(&value) {
+        Ok(json) => Ok(CallToolResult::success(vec![ContentBlock::text(json)])),
+        Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+            "serialization failed: {e}"
+        ))])),
+    }
+}
+
+/// Domain errors become tool-error content, not JSON-RPC protocol errors —
+/// the model reads the message and can react.
+fn tool_err(e: impl std::fmt::Display) -> CallToolResult {
+    CallToolResult::error(vec![ContentBlock::text(e.to_string())])
+}
+
+/// `list_connections` output: the profile minus `secret_reference` and
+/// auth/encryption internals — nothing here can carry a password.
+#[derive(Debug, Serialize)]
+struct ConnectionSummary {
+    id: i64,
+    name: String,
+    host: String,
+    port: u16,
+    database: Option<String>,
+}
+
+impl From<ConnectionProfile> for ConnectionSummary {
+    fn from(p: ConnectionProfile) -> Self {
+        Self {
+            id: p.id.0,
+            name: p.name,
+            host: p.host,
+            port: p.port,
+            database: p.database,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ConnectionArgs {
+    /// Connection id from `list_connections`.
+    pub conn_id: i64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TablesArgs {
+    /// Connection id from `list_connections`.
+    pub conn_id: i64,
+    /// Database name; defaults to the connection's configured database.
+    pub database: Option<String>,
+    /// Schema name; defaults to "dbo".
+    pub schema: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DescribeArgs {
+    /// Connection id from `list_connections`.
+    pub conn_id: i64,
+    /// Database name; defaults to the connection's configured database.
+    pub database: Option<String>,
+    /// Schema name; defaults to "dbo".
+    pub schema: Option<String>,
+    /// Table or view name.
+    pub table: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SearchArgs {
+    /// Connection id from `list_connections`.
+    pub conn_id: i64,
+    /// Table/view name fragment; SQL LIKE wildcards % and _ work.
+    pub query: String,
+    /// Database name; defaults to the connection's configured database.
+    pub database: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct QueryArgs {
+    /// Connection id from `list_connections`.
+    pub conn_id: i64,
+    /// SQL text (T-SQL).
+    pub query: String,
+    /// Database name; defaults to the connection's configured database.
+    pub database: Option<String>,
+}
+/// The `search_schema` metadata query: tables/views whose name contains
+/// `query`. `'` is the only char needing escape inside the LIKE literal;
+/// LIKE wildcards are left live as a feature.
+pub(crate) fn search_sql(query: &str) -> String {
+    let needle = query.replace('\'', "''");
+    format!(
+        "SELECT s.name AS schema_name, o.name, CASE o.type WHEN 'V' THEN 'view' \
+         ELSE 'table' END AS kind FROM sys.objects o JOIN sys.schemas s \
+         ON o.schema_id = s.schema_id WHERE o.type IN ('U','V') \
+         AND o.name LIKE '%{needle}%' ORDER BY s.name, o.name"
+    )
+}
+
+#[tool_router(vis = "pub(crate)")]
+impl<D: DatabaseDriver + 'static> DataraMcp<D> {
+    /// Saved connection profiles — ids for every other tool's `conn_id`.
+    /// No secrets are included.
+    #[tool(
+        description = "List saved Datara connection profiles (id, name, host, port, database). Use these ids as conn_id in other tools."
+    )]
+    async fn list_connections(&self) -> Result<CallToolResult, McpError> {
+        match self.storage.connections().list().await {
+            Ok(profiles) => json_result(
+                profiles
+                    .into_iter()
+                    .map(ConnectionSummary::from)
+                    .collect::<Vec<_>>(),
+            ),
+            Err(e) => Ok(tool_err(e)),
+        }
+    }
+
+    #[tool(description = "List databases visible to a connection.")]
+    async fn list_databases(
+        &self,
+        Parameters(args): Parameters<ConnectionArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match self
+            .service
+            .list_databases(ConnectionId(args.conn_id))
+            .await
+        {
+            Ok(dbs) => json_result(dbs),
+            Err(e) => Ok(tool_err(e)),
+        }
+    }
+
+    #[tool(description = "List tables and views in a schema of a database.")]
+    async fn list_tables(
+        &self,
+        Parameters(args): Parameters<TablesArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let id = ConnectionId(args.conn_id);
+        let schema = args.schema.unwrap_or_else(|| DEFAULT_SCHEMA.to_owned());
+        match self.resolve_database(id, args.database.as_deref()).await {
+            Err(e) => Ok(tool_err(e)),
+            Ok(database) => match self.service.list_tables(&id, &database, &schema).await {
+                Ok(tables) => json_result(tables),
+                Err(e) => Ok(tool_err(e)),
+            },
+        }
+    }
+
+    #[tool(
+        description = "Describe a table or view: columns (name, type, nullable, pk) and indexes."
+    )]
+    async fn describe_table(
+        &self,
+        Parameters(args): Parameters<DescribeArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let id = ConnectionId(args.conn_id);
+        let schema = args.schema.unwrap_or_else(|| DEFAULT_SCHEMA.to_owned());
+        match self.resolve_database(id, args.database.as_deref()).await {
+            Err(e) => Ok(tool_err(e)),
+            Ok(database) => match self
+                .service
+                .describe_table(&id, &database, &schema, &args.table)
+                .await
+            {
+                Ok(desc) => json_result(desc),
+                Err(e) => Ok(tool_err(e)),
+            },
+        }
+    }
+
+    /// Searches `sys.objects` by name — one query, no per-schema fan-out.
+    /// Runs through `session.execute` directly so the metadata lookup is not
+    /// recorded in the user's query history.
+    #[tool(
+        description = "Search table and view names containing `query` in a database. Returns [{schema, name, kind}]. SQL LIKE wildcards % and _ work in query."
+    )]
+    async fn search_schema(
+        &self,
+        Parameters(args): Parameters<SearchArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let id = ConnectionId(args.conn_id);
+        let database = match self.resolve_database(id, args.database.as_deref()).await {
+            Err(e) => return Ok(tool_err(e)),
+            Ok(db) => db,
+        };
+        let session = match self.service.session(id).await {
+            Ok(s) => s,
+            Err(e) => return Ok(tool_err(e)),
+        };
+        let sql = search_sql(&args.query);
+        match session.execute(&database, &sql, self.max_rows).await {
+            Err(e) => Ok(tool_err(e)),
+            Ok(mut result) => {
+                cap_rows(&mut result, self.max_rows);
+                let tables: Vec<TableInfo> = result
+                    .rows
+                    .iter()
+                    .filter_map(|r| match r.cells.as_slice() {
+                        [Value::Text(schema), Value::Text(name), Value::Text(kind)] => {
+                            Some(TableInfo {
+                                schema: schema.clone(),
+                                name: name.clone(),
+                                kind: if kind == "view" {
+                                    TableKind::View
+                                } else {
+                                    TableKind::Base
+                                },
+                            })
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                json_result(tables)
+            }
+        }
+    }
+
+    #[tool(
+        description = "Execute a SQL query on a connection. Returns columns, rows, rows_affected, truncated. Rows are capped by server config (mcp.max_result_rows)."
+    )]
+    async fn execute_query(
+        &self,
+        Parameters(args): Parameters<QueryArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match self
+            .service
+            .execute(
+                ConnectionId(args.conn_id),
+                args.database,
+                args.query,
+                self.max_rows,
+            )
+            .await
+        {
+            Err(e) => Ok(tool_err(e)),
+            Ok(handle) => match handle.await {
+                Err(join_err) => Ok(tool_err(join_err)),
+                Ok(Err(e)) => Ok(tool_err(e)),
+                Ok(Ok(mut result)) => {
+                    cap_rows(&mut result, self.max_rows);
+                    json_result(result)
+                }
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use datara_database::{DatabaseDriver, DatabaseService, DatabaseSession, SecretSource};
+    use datara_domain::{
+        AuthenticationMode, ColumnInfo, Credentials, DatabaseInfo, EncryptionMode, IndexInfo,
+        QueryColumn, QueryResult, Result as DomainResult, SchemaInfo, SecretReference,
+        TableDescription,
+    };
+    use datara_storage::{NewConnection, Storage};
+    use secrecy::SecretString;
+
+    use super::*;
+    use crate::server::DEFAULT_SCHEMA;
+
+    struct StubSecrets;
+
+    #[async_trait]
+    impl SecretSource for StubSecrets {
+        async fn load(&self, _reference: &SecretReference) -> DomainResult<SecretString> {
+            Ok(SecretString::from("hunter2"))
+        }
+    }
+
+    /// Session returning fixed metadata and one [schema, name, kind] rowset
+    /// for `execute`, matching `search_schema`'s SELECT shape.
+    struct StubSession;
+
+    #[async_trait]
+    impl DatabaseSession for StubSession {
+        async fn list_databases(&self) -> DomainResult<Vec<DatabaseInfo>> {
+            Ok(vec![
+                DatabaseInfo {
+                    name: "master".into(),
+                },
+                DatabaseInfo {
+                    name: "appdb".into(),
+                },
+            ])
+        }
+        async fn list_schemas(&self, _d: &str) -> DomainResult<Vec<SchemaInfo>> {
+            Ok(vec![])
+        }
+        async fn list_tables(&self, _d: &str, s: &str) -> DomainResult<Vec<TableInfo>> {
+            Ok(vec![TableInfo {
+                schema: s.into(),
+                name: "users".into(),
+                kind: TableKind::Base,
+            }])
+        }
+        async fn describe_table(
+            &self,
+            _d: &str,
+            s: &str,
+            t: &str,
+        ) -> DomainResult<TableDescription> {
+            Ok(TableDescription {
+                schema: s.into(),
+                name: t.into(),
+                columns: vec![ColumnInfo {
+                    name: "id".into(),
+                    data_type: "int".into(),
+                    nullable: false,
+                    is_primary_key: true,
+                    ordinal: 1,
+                }],
+                indexes: Vec::<IndexInfo>::new(),
+            })
+        }
+        async fn execute(&self, _d: &str, _q: &str, _m: usize) -> DomainResult<QueryResult> {
+            Ok(QueryResult {
+                columns: vec![QueryColumn {
+                    name: "x".into(),
+                    data_type: "text".into(),
+                }],
+                rows: vec![datara_domain::QueryRow {
+                    cells: vec![
+                        Value::Text("dbo".into()),
+                        Value::Text("users".into()),
+                        Value::Text("table".into()),
+                    ],
+                }],
+                rows_affected: None,
+                truncated: false,
+            })
+        }
+        async fn cancel(&self) -> DomainResult<()> {
+            Ok(())
+        }
+        fn quote_ident(&self, ident: &str) -> String {
+            format!("[{ident}]")
+        }
+    }
+
+    /// `DatabaseService::new` needs `D: Default`.
+    #[derive(Default)]
+    struct StubDriver;
+
+    #[async_trait]
+    impl DatabaseDriver for StubDriver {
+        async fn connect(
+            &self,
+            _p: &ConnectionProfile,
+            _c: &Credentials,
+        ) -> DomainResult<Box<dyn DatabaseSession>> {
+            Ok(Box::new(StubSession))
+        }
+    }
+
+    fn tool_text(result: &CallToolResult) -> String {
+        match &result.content[0] {
+            ContentBlock::Text(t) => t.text.clone(),
+            _ => panic!("expected text content"),
+        }
+    }
+
+    async fn mcp() -> (DataraMcp<StubDriver>, Arc<Storage>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(Storage::open(&dir.path().join("test.db")).await.unwrap());
+        storage
+            .connections()
+            .insert(NewConnection {
+                name: "it".into(),
+                host: "127.0.0.1".into(),
+                port: 1433,
+                database: Some("appdb".into()),
+                username: "sa".into(),
+                authentication: AuthenticationMode::SqlPassword,
+                encryption: EncryptionMode::Preferred,
+                trust_server_certificate: true,
+            })
+            .await
+            .unwrap();
+        let service = Arc::new(DatabaseService::<StubDriver>::new(
+            Arc::clone(&storage),
+            Arc::new(StubSecrets),
+        ));
+        (
+            DataraMcp::new(service, Arc::clone(&storage), 1000),
+            storage,
+            dir,
+        )
+    }
+
+    #[tokio::test]
+    async fn list_connections_returns_profiles_without_secret_reference() {
+        let (mcp, _s, _d) = mcp().await;
+        let result = mcp.list_connections().await.unwrap();
+        let json = tool_text(&result);
+        let conns: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(conns[0]["name"], "it");
+        assert_eq!(conns[0]["port"], 1433);
+        // The whole payload must not mention secrets at all.
+        assert!(!json.contains("secret"));
+    }
+
+    #[tokio::test]
+    async fn list_databases_uses_pooled_session() {
+        let (mcp, _s, _d) = mcp().await;
+        let result = mcp
+            .list_databases(Parameters(ConnectionArgs { conn_id: 1 }))
+            .await
+            .unwrap();
+        let json = tool_text(&result);
+        assert!(json.contains("appdb"));
+    }
+
+    #[tokio::test]
+    async fn list_tables_defaults_schema_and_profile_database() {
+        let (mcp, _s, _d) = mcp().await;
+        let result = mcp
+            .list_tables(Parameters(TablesArgs {
+                conn_id: 1,
+                database: None,
+                schema: None,
+            }))
+            .await
+            .unwrap();
+        let json = tool_text(&result);
+        // Stub echoes the schema it was called with.
+        assert!(json.contains(DEFAULT_SCHEMA));
+        assert!(json.contains("users"));
+    }
+
+    #[tokio::test]
+    async fn search_schema_maps_rows_and_escapes_quotes() {
+        let (mcp, _s, _d) = mcp().await;
+        let result = mcp
+            .search_schema(Parameters(SearchArgs {
+                conn_id: 1,
+                query: "us'er".into(),
+                database: None,
+            }))
+            .await
+            .unwrap();
+        let json = tool_text(&result);
+        assert!(search_sql("us'er").contains("us''er"));
+        // Fixed stub row maps to a TableInfo.
+        assert!(json.contains("users"));
+        assert!(json.contains("dbo"));
+    }
+
+    #[tokio::test]
+    async fn execute_query_returns_result_and_caps_rows() {
+        let (mcp, _s, _d) = mcp().await;
+        let result = mcp
+            .execute_query(Parameters(QueryArgs {
+                conn_id: 1,
+                query: "SELECT 1".into(),
+                database: None,
+            }))
+            .await
+            .unwrap();
+        let json = tool_text(&result);
+        assert!(json.contains("dbo")); // stub rowset echoed through
+
+        let mut big = QueryResult {
+            columns: vec![],
+            rows: (0..5)
+                .map(|i| datara_domain::QueryRow {
+                    cells: vec![Value::Int(i)],
+                })
+                .collect(),
+            rows_affected: None,
+            truncated: false,
+        };
+        cap_rows(&mut big, 3);
+        assert_eq!(big.rows.len(), 3);
+        assert!(big.truncated);
+    }
+
+    #[tokio::test]
+    async fn unknown_connection_is_tool_error_not_panic() {
+        let (mcp, _s, _d) = mcp().await;
+        let result = mcp
+            .list_databases(Parameters(ConnectionArgs { conn_id: 999 }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(tool_text(&result).contains("not found"));
+    }
+}

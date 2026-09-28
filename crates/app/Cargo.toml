@@ -16,6 +16,7 @@ tracing-subscriber.workspace = true
 datara-config.workspace = true
 datara-data-grid.workspace = true
 datara-database.workspace = true
+datara-mcp-server.workspace = true
 datara-domain.workspace = true
 datara-driver-mssql.workspace = true
 datara-secrets.workspace = true
