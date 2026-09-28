@@ -475,6 +475,65 @@ pub fn run(services: AppServices) -> anyhow::Result<()> {
             crate::bridge::toggle_history(&win, &cx);
         });
     }
+
+    // ── Saved queries (Task 6.2) ─────────────────────────────────────
+
+    {
+        let cx = Arc::clone(&cx);
+        let weak = window.as_weak();
+        bridge.on_saved_search(move |filter| {
+            let Some(win) = weak.upgrade() else { return };
+            let backend = Arc::clone(&cx.backend);
+            let ui = UiHandle::new(&win, Arc::clone(&cx));
+            cx.handle.spawn(async move {
+                backend.saved_list(&filter, ui).await;
+            });
+        });
+    }
+
+    {
+        let cx = Arc::clone(&cx);
+        let weak = window.as_weak();
+        bridge.on_save_query(move |name| {
+            let Some(win) = weak.upgrade() else { return };
+            // The dialog is modal — editor-text still holds the buffer that
+            // Ctrl+S targeted.
+            let query = win.global::<Bridge>().get_editor_text().to_string();
+            let filter = win.global::<Bridge>().get_history_query().to_string();
+            let backend = Arc::clone(&cx.backend);
+            let ui = UiHandle::new(&win, Arc::clone(&cx));
+            cx.handle.spawn(async move {
+                backend.save_query(&name, &query, &filter, ui).await;
+            });
+        });
+    }
+
+    {
+        let cx = Arc::clone(&cx);
+        let weak = window.as_weak();
+        bridge.on_saved_open(move |id| {
+            let Some(win) = weak.upgrade() else { return };
+            let backend = Arc::clone(&cx.backend);
+            let ui = UiHandle::new(&win, Arc::clone(&cx));
+            cx.handle.spawn(async move {
+                backend.saved_open(i64::from(id), ui).await;
+            });
+        });
+    }
+
+    {
+        let cx = Arc::clone(&cx);
+        let weak = window.as_weak();
+        bridge.on_saved_delete(move |id| {
+            let Some(win) = weak.upgrade() else { return };
+            let filter = win.global::<Bridge>().get_history_query().to_string();
+            let backend = Arc::clone(&cx.backend);
+            let ui = UiHandle::new(&win, Arc::clone(&cx));
+            cx.handle.spawn(async move {
+                backend.saved_delete(i64::from(id), &filter, ui).await;
+            });
+        });
+    }
     window.run()?;
     Ok(())
 }
@@ -597,10 +656,23 @@ mod tests {
                 .on_command(move |text, ctrl, shift, alt| {
                     let cmd =
                         commands::parse_command(&commands::key_string(&text, ctrl, shift, alt));
-                    if cmd == Some(Command::OpenPalette) {
-                        if let Some(win) = weak.upgrade() {
-                            crate::bridge::open_palette(&win.global::<Bridge>(), &tree.borrow());
+                    match cmd {
+                        Some(Command::OpenPalette) => {
+                            if let Some(win) = weak.upgrade() {
+                                crate::bridge::open_palette(
+                                    &win.global::<Bridge>(),
+                                    &tree.borrow(),
+                                );
+                            }
                         }
+                        // The real SaveQuery arm — no UiCtx needed, the
+                        // dialog-open path only touches the bridge.
+                        Some(Command::SaveQuery) => {
+                            if let Some(win) = weak.upgrade() {
+                                crate::bridge::open_save_query_dialog(&win.global::<Bridge>());
+                            }
+                        }
+                        _ => {}
                     }
                     seen.borrow_mut().push((text.to_string(), ctrl, shift, alt));
                     cmd.is_some()
@@ -1097,6 +1169,61 @@ mod tests {
         assert_eq!(items.row_data(0).unwrap().query.as_str(), "select 1");
         bridge.invoke_history_toggle();
         assert!(!bridge.get_history_visible());
+
+        // ── Save-query dialog smoke (Task 6.2) ──────────────────────
+        // Ctrl+S opens the dialog through the real key path (editor-text
+        // is still "SELECT x"). Enter on an empty name keeps it up (the
+        // Save button is disabled); typing a name + Enter fires
+        // save-query and closes.
+        let saved_names = Rc::new(RefCell::new(Vec::<String>::new()));
+        {
+            let saved_names = Rc::clone(&saved_names);
+            bridge.on_save_query(move |n| saved_names.borrow_mut().push(n.to_string()));
+        }
+        press_ctrl(win, "s");
+        assert!(
+            bridge.get_save_dialog_visible(),
+            "Ctrl+S must open the save-query dialog"
+        );
+        press(win, Key::Return);
+        assert!(bridge.get_save_dialog_visible(), "empty name must not save");
+        assert!(saved_names.borrow().is_empty());
+        for ch in "q1".chars() {
+            press(win, ch.to_string());
+        }
+
+        press(win, Key::Return);
+        assert_eq!(saved_names.borrow().as_slice(), ["q1"]);
+        assert!(!bridge.get_save_dialog_visible(), "save closes the dialog");
+
+        // The guard itself: empty editor → status, no dialog.
+        bridge.set_editor_text("".into());
+        crate::bridge::open_save_query_dialog(&bridge);
+        assert!(!bridge.get_save_dialog_visible());
+        assert_eq!(bridge.get_status().as_str(), "Nothing to save");
+        // Saved tab of the panel: switching pushes the search through
+        // saved-search (wired here like run()'s callback) and the model
+        // lands on saved-items.
+        let saved_searches = Rc::new(RefCell::new(Vec::<String>::new()));
+        {
+            let saved_searches = Rc::clone(&saved_searches);
+            bridge.on_saved_search(move |f| saved_searches.borrow_mut().push(f.to_string()));
+        }
+        bridge.invoke_history_toggle();
+        bridge.set_history_tab(1);
+        // PanelTab's clicked handler, minus the TouchArea.
+        bridge.invoke_saved_search(bridge.get_history_query());
+        assert_eq!(saved_searches.borrow().as_slice(), [""]);
+        bridge.set_saved_items(ModelRc::new(VecModel::from(vec![crate::SavedItem {
+            id: 9,
+            name: "q1".into(),
+            query: "select 1".into(),
+        }])));
+        let items = bridge.get_saved_items();
+        assert_eq!(items.row_count(), 1);
+        assert_eq!(items.row_data(0).unwrap().name.as_str(), "q1");
+        bridge.invoke_history_toggle();
+        bridge.set_history_tab(0);
     }
 
     /// Live Task 5.3 smoke: `AppEvent::PreviewSql` — what double-clicking a

@@ -14,18 +14,21 @@ use crate::HistoryItem;
 /// Cap on rows pulled for the panel — newest-first.
 const HISTORY_LIMIT: u32 = 200;
 
-/// `QueryHistoryEntry` → the Slint row model. `query` is the entry's first
-/// line capped at 80 chars (the row is single-line; the full text comes
-/// back from `HistoryRepo::get` on rerun/copy).
-fn history_item(e: &QueryHistoryEntry) -> HistoryItem {
-    let first = e.query.lines().next().unwrap_or_default();
-    let query = match first.char_indices().nth(80) {
+/// First line of `query` capped at 80 chars — the single-line preview the
+/// history and saved panels show (full text comes back on open/rerun).
+pub(crate) fn preview_line(query: &str) -> String {
+    let first = query.lines().next().unwrap_or_default();
+    match first.char_indices().nth(80) {
         Some((i, _)) => format!("{}…", &first[..i]),
         None => first.to_owned(),
-    };
+    }
+}
+
+/// `QueryHistoryEntry` → the Slint row model.
+fn history_item(e: &QueryHistoryEntry) -> HistoryItem {
     HistoryItem {
         id: e.id as i32,
-        query: query.into(),
+        query: preview_line(&e.query).into(),
         started_at: local_timestamp(e.started_at).into(),
         duration: format_duration(e.duration_ms).into(),
         rows: format!("{} rows", e.row_count).into(),

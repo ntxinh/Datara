@@ -86,6 +86,15 @@ export struct HistoryItem {
     ok: bool,
 }
 
+/// One row in the Saved tab of the history panel (Task 6.2). `query` is
+/// the first line of the saved text, capped at 80 chars by Rust.
+export struct SavedItem {
+    id: int,
+    name: string,
+    query: string,
+}
+
+
 
 
 /// Slint ↔ Tokio bridge. Callbacks fire on the UI thread and spawn work on
@@ -191,6 +200,26 @@ export global Bridge {
     /// Ctrl+Shift+F / History button: toggle the panel (Rust owns the
     /// open-search refresh — `changed` watchers aren't reliable here).
     callback history-toggle();
+
+    // ── Saved queries (Task 6.2) ───────────────────────────────────────
+    /// Panel tab: 0 = History, 1 = Saved. Drives which list the filter
+    /// searches and which model the ListView shows.
+    in-out property<int> history-tab: 0;
+    /// Saved-query rows — pushed by Rust on saved-search/save/delete.
+    in property<[SavedItem]> saved-items;
+    /// Filter text changed while the Saved tab is active.
+    callback saved-search(string);
+    /// Ctrl+S → save dialog's Save: persist `name` bound to the active
+    /// tab's full editor text.
+    callback save-query(string);
+    /// Load a saved query into a new editor tab — no auto-execute (unlike
+    /// history-rerun; saved queries open for editing).
+    callback saved-open(int);
+    /// Delete the saved query, then refresh the list.
+    callback saved-delete(int);
+    /// The save-query dialog. Rust sets it for Ctrl+S / palette "Save
+    /// query"; Slint writes false on close.
+    in-out property<bool> save-dialog-visible;
     /// Current completion candidates; non-empty shows the popup.
     in property<[string]> completions;
     /// Selected row in the completion popup. In-out so the popup's own

@@ -3,6 +3,7 @@ mod commands;
 mod editor_ui;
 mod grid;
 mod history_ui;
+mod saved_ui;
 mod schema_tree;
 mod services;
 mod ui;

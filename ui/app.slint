@@ -5,13 +5,14 @@ import { Palette } from "components/palette.slint";
 import { QueryEditor } from "editor/query_editor.slint";
 import { Button } from "std-widgets.slint";
 import { ConnDialog } from "dialogs/connection.slint";
+import { SaveQueryDialog } from "dialogs/save_query.slint";
 import { Bridge } from "bridge.slint";
 import { ResultGrid } from "grid/result_grid.slint";
 import { HistoryPanel } from "pages/history.slint";
 
 // Re-export so Rust's include_modules! sees the generated types.
 export { ConnForm, TreeNode, TabItem, HighlightSpan, CommandItem,
-         GridCol, GridCell, GridRow, GridSel, HistoryItem, Bridge } from "bridge.slint";
+         GridCol, GridCell, GridRow, GridSel, HistoryItem, SavedItem, Bridge } from "bridge.slint";
 
 export component MainWindow inherits Window {
     title: "Datara";
@@ -203,6 +204,15 @@ export component MainWindow inherits Window {
         height: 100%;
         close-requested => {
             Bridge.conn-dialog-visible = false;
+        }
+    }
+
+    // Ctrl+S "Save query" dialog — same overlay pattern as ConnDialog.
+    if Bridge.save-dialog-visible: SaveQueryDialog {
+        width: 100%;
+        height: 100%;
+        close-requested => {
+            Bridge.save-dialog-visible = false;
         }
     }
 }

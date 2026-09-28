@@ -18,7 +18,8 @@ use crate::grid::GridState;
 use crate::schema_tree::{NodeKind, SchemaTree, TreeNode};
 use crate::services::{preview_sql, Backend};
 use crate::{
-    Bridge, CommandItem, HighlightSpan, HistoryItem, MainWindow, TabItem, TreeNode as SlintTreeNode,
+    Bridge, CommandItem, HighlightSpan, HistoryItem, MainWindow, SavedItem, TabItem,
+    TreeNode as SlintTreeNode,
 };
 use datara_domain::{Command, ConnectionId, ConnectionProfile, QueryResult};
 use slint::{ComponentHandle, ModelRc, VecModel, Weak};
@@ -79,6 +80,13 @@ pub enum AppEvent {
     /// `history-copy` resolved the entry — copy its full query text on the
     /// UI thread (clipboard lives in `UiCtx`).
     CopyHistoryText(String),
+    /// `saved-search`/`save-query`/`saved-delete` finished — swap the
+    /// Saved tab's model (Task 6.2).
+    SavedLoaded(Vec<SavedItem>),
+    /// `saved-open` resolved the query — load it into a new editor tab.
+    /// Unlike `PreviewSql` this does NOT execute: saved queries open for
+    /// editing.
+    OpenSavedSql { label: String, sql: String },
 }
 
 /// Everything `apply` needs on the UI thread. Shared between `UiHandle`
@@ -237,23 +245,67 @@ pub(crate) fn apply(window: &MainWindow, cx: &Arc<UiCtx>, event: AppEvent) {
         AppEvent::CopyHistoryText(text) => {
             GridState::copy_to_clipboard(&mut cx.clipboard.lock(), &bridge, text);
         }
+
+        AppEvent::SavedLoaded(items) => {
+            bridge.set_saved_items(ModelRc::new(VecModel::from(items)));
+        }
+        AppEvent::OpenSavedSql { label, sql } => {
+            // Inherit the outgoing tab's connection context — saved queries
+            // carry none.
+            let (conn_id, database) = {
+                let editor = cx.editor.lock();
+                (
+                    editor.active_tab().conn_id,
+                    editor.active_tab().database.clone(),
+                )
+            };
+            {
+                let mut editor = cx.editor.lock();
+                editor.open_sql_tab(label, sql.clone(), conn_id, database);
+                push_tabs(&bridge, &editor);
+                let jump = editor.cursor_jump(sql.len());
+                bridge.set_editor_text(sql.clone().into());
+                bridge.set_set_cursor(jump);
+            }
+            bridge.set_line_count(line_count(&sql) as i32);
+            bridge.set_highlight_spans(spans_model(&sql));
+        }
     }
 }
 
-/// Auto-refresh (Task 6.1): after a query completes, its history row just
-/// landed in storage — re-run the panel's search when it's open.
+/// Auto-refresh (Tasks 6.1/6.2): after a query completes, its history row
+/// just landed in storage — re-run the active panel tab's search when the
+/// panel is open.
 fn refresh_history(window: &MainWindow, cx: &Arc<UiCtx>) {
     let bridge = window.global::<Bridge>();
     if !bridge.get_history_visible() {
         return;
     }
-    let conn_id = cx.editor.lock().active_tab().conn_id;
     let filter = bridge.get_history_query().to_string();
     let backend = Arc::clone(&cx.backend);
     let ui = UiHandle::new(window, Arc::clone(cx));
-    cx.handle.spawn(async move {
-        backend.history_search(conn_id, &filter, ui).await;
-    });
+    if bridge.get_history_tab() == 1 {
+        cx.handle.spawn(async move {
+            backend.saved_list(&filter, ui).await;
+        });
+    } else {
+        let conn_id = cx.editor.lock().active_tab().conn_id;
+        cx.handle.spawn(async move {
+            backend.history_search(conn_id, &filter, ui).await;
+        });
+    }
+}
+
+/// Ctrl+S / palette "Save query": open the name dialog when there's text
+/// worth saving. The dialog's Save calls `Bridge.save-query` with the
+/// current editor text — nothing stashed at open time (modal; the editor
+/// can't change while it's up).
+pub(crate) fn open_save_query_dialog(bridge: &Bridge) {
+    if bridge.get_editor_text().trim().is_empty() {
+        bridge.set_status("Nothing to save".into());
+    } else {
+        bridge.set_save_dialog_visible(true);
+    }
 }
 
 /// Ctrl+Shift+F / toolbar button: show or hide the history panel. Opening
@@ -356,7 +408,7 @@ pub(crate) fn run_command(window: &MainWindow, cx: &Arc<UiCtx>, cmd: Command) {
                 bridge.set_schema_filter_visible(true);
             }
         }
-        Command::SaveQuery => bridge.set_status("Save query: not yet implemented".into()),
+        Command::SaveQuery => open_save_query_dialog(&bridge),
         Command::OpenPalette => open_palette(&bridge, &cx.tree.lock()),
         Command::Find => bridge.set_status("Find: not yet implemented".into()),
         Command::SearchHistory => toggle_history(window, cx),

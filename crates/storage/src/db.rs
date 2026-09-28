@@ -42,6 +42,11 @@ impl Storage {
         crate::HistoryRepo::new(self)
     }
 
+    /// Repository for saved queries.
+    pub fn saved(&self) -> crate::SavedRepo<'_> {
+        crate::SavedRepo::new(self)
+    }
+
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.pool
     }

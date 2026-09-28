@@ -11,7 +11,8 @@ Planned Slint component tree (all under `ui/`):
 | connection dialog | `dialogs/connection.slint` | profile editor | implemented — 2.4 |
 | query editor | `editor/query_editor.slint` | SQL editing surface | implemented — 4.2 |
 | result grid | `grid/result_grid.slint` | virtualized results | planned — phase 5 |
-| history page | `pages/history.slint` | query history | planned — phase 6 |
+| history page | `pages/history.slint` | query history + saved queries | implemented — 6.1/6.2 |
+| save dialog | `dialogs/save_query.slint` | name input for Ctrl+S | implemented — 6.2 |
 
 Rule: components own view state only; actions go through `domain::Command`
 and the app bridge.

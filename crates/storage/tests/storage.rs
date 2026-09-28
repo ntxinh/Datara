@@ -193,3 +193,35 @@ fn history_entry_has_no_credential_field() {
         "history entry must not carry credential fields: {keys:?}"
     );
 }
+
+/// `SavedRepo` round-trip: save → list → get → delete keeps name and query
+/// text intact.
+#[tokio::test]
+async fn saved_query_round_trip() {
+    let (storage, _dir) = open().await;
+    let repo = storage.saved();
+
+    let id = repo
+        .save("daily", "select * from t\nwhere x = 1")
+        .await
+        .unwrap();
+    assert!(id > 0);
+    let other = repo.save("weekly", "select 42").await.unwrap();
+
+    // list is name-ordered; multi-line text survives intact.
+    let all = repo.list().await.unwrap();
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[0].name, "daily");
+    assert_eq!(all[0].query, "select * from t\nwhere x = 1");
+    assert_eq!(all[1].id, other);
+
+    let fetched = repo.get(id).await.unwrap();
+    assert_eq!(
+        (fetched.name.as_str(), fetched.query.as_str()),
+        ("daily", "select * from t\nwhere x = 1")
+    );
+
+    repo.delete(id).await.unwrap();
+    assert!(repo.get(id).await.is_err());
+    assert_eq!(repo.list().await.unwrap().len(), 1);
+}
