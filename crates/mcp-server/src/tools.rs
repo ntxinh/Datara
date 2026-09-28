@@ -12,6 +12,9 @@ use rmcp::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sqlparser::ast::{Query, SetExpr, Statement, TableFactor};
+use sqlparser::dialect::GenericDialect;
+use sqlparser::parser::Parser;
 
 use crate::server::{cap_rows, DataraMcp, DEFAULT_SCHEMA};
 
@@ -112,6 +115,70 @@ pub struct QueryArgs {
     pub query: String,
     /// Database name; defaults to the connection's configured database.
     pub database: Option<String>,
+}
+
+/// Whether the SQL batch is provably read-only: every statement parses to a
+/// `SELECT` query AND `query_is_read` verifies no nested write (`SELECT
+/// INTO`, `VALUES`-fed `INSERT`, CTE bodies, derived tables). Unparseable
+/// SQL is NOT read-only — the parser never vouches for what it couldn't read
+/// (mirrors `is_row_returning` in the MSSQL driver, fail-safe flipped).
+fn is_read_only(query: &str) -> bool {
+    match Parser::parse_sql(&GenericDialect {}, query) {
+        Ok(stmts) => {
+            !stmts.is_empty()
+                && stmts
+                    .iter()
+                    .all(|s| matches!(s, Statement::Query(q) if query_is_read(q)))
+        }
+        Err(_) => false,
+    }
+}
+
+/// Whether `q` is a pure read: every `Select` has no `INTO` target and every
+/// nested `SetExpr`/CTE/derived table is read-only. `SetExpr` can carry
+/// `Insert`/`Update`/`Delete`/`Merge`, so a shallow `is_select` is not proof.
+fn query_is_read(q: &Query) -> bool {
+    let ctes_read = q
+        .with
+        .as_ref()
+        .is_none_or(|w| w.cte_tables.iter().all(|c| query_is_read(&c.query)));
+    ctes_read && set_expr_is_read(&q.body)
+}
+
+fn set_expr_is_read(e: &SetExpr) -> bool {
+    match e {
+        // `SELECT ... INTO` writes; `select.into` must be absent.
+        SetExpr::Select(s) => {
+            s.into.is_none()
+                && s.from.iter().all(|t| {
+                    table_factor_is_read(&t.relation)
+                        && t.joins.iter().all(|j| table_factor_is_read(&j.relation))
+                })
+        }
+        SetExpr::Query(q) => query_is_read(q),
+        SetExpr::SetOperation { left, right, .. } => {
+            set_expr_is_read(left) && set_expr_is_read(right)
+        }
+        // Values/Table are read-only; Insert/Update/Delete/Merge are not.
+        SetExpr::Values(_) | SetExpr::Table(_) => true,
+        _ => false,
+    }
+}
+
+fn table_factor_is_read(t: &TableFactor) -> bool {
+    match t {
+        TableFactor::Derived { subquery, .. } => query_is_read(subquery),
+        TableFactor::NestedJoin {
+            table_with_joins, ..
+        } => {
+            table_factor_is_read(&table_with_joins.relation)
+                && table_with_joins
+                    .joins
+                    .iter()
+                    .all(|j| table_factor_is_read(&j.relation))
+        }
+        _ => true,
+    }
 }
 
 /// The `search_schema` metadata query: tables/views whose name contains
@@ -262,12 +329,18 @@ impl<D: DatabaseDriver + 'static> DataraMcp<D> {
     }
 
     #[tool(
-        description = "Execute a SQL query on a connection. Returns columns, rows, rows_affected, truncated. Rows are capped by server config (mcp.max_result_rows)."
+        description = "Execute a SQL query on a connection. Returns statement_type (read|write), columns, rows, rows_affected, truncated. Rows are capped by server config (mcp.max_result_rows); non-SELECT statements are refused unless mcp.allow_writes is set."
     )]
     async fn execute_query(
         &self,
         Parameters(args): Parameters<QueryArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let read_only = is_read_only(&args.query);
+        if !read_only && !self.allow_writes {
+            return Ok(tool_err(
+                "write queries disabled — set mcp.allow_writes = true in config to allow",
+            ));
+        }
         match self
             .service
             .execute(
@@ -284,7 +357,13 @@ impl<D: DatabaseDriver + 'static> DataraMcp<D> {
                 Ok(Err(e)) => Ok(tool_err(e)),
                 Ok(Ok(mut result)) => {
                     cap_rows(&mut result, self.max_rows);
-                    json_result(result)
+                    json_result(serde_json::json!({
+                        "statement_type": if read_only { "read" } else { "write" },
+                        "columns": result.columns,
+                        "rows": result.rows,
+                        "rows_affected": result.rows_affected,
+                        "truncated": result.truncated,
+                    }))
                 }
             },
         }
@@ -409,7 +488,10 @@ mod tests {
         }
     }
 
-    async fn mcp_with(max_rows: usize) -> (DataraMcp<StubDriver>, Arc<Storage>, tempfile::TempDir) {
+    async fn mcp_with(
+        max_rows: usize,
+        allow_writes: bool,
+    ) -> (DataraMcp<StubDriver>, Arc<Storage>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let storage = Arc::new(Storage::open(&dir.path().join("test.db")).await.unwrap());
         storage
@@ -431,14 +513,14 @@ mod tests {
             Arc::new(StubSecrets),
         ));
         (
-            DataraMcp::new(service, Arc::clone(&storage), max_rows),
+            DataraMcp::new(service, Arc::clone(&storage), max_rows, allow_writes),
             storage,
             dir,
         )
     }
 
     async fn mcp() -> (DataraMcp<StubDriver>, Arc<Storage>, tempfile::TempDir) {
-        mcp_with(1000).await
+        mcp_with(1000, false).await
     }
 
     #[tokio::test]
@@ -504,7 +586,7 @@ mod tests {
     #[tokio::test]
     async fn row_tools_report_truncation() {
         // Stub returns 2 databases; cap at 1 → truncated flag must surface.
-        let (mcp, _s, _d) = mcp_with(1).await;
+        let (mcp, _s, _d) = mcp_with(1, false).await;
         let result = mcp
             .list_databases(Parameters(ConnectionArgs { conn_id: 1 }))
             .await
@@ -527,6 +609,8 @@ mod tests {
             .unwrap();
         let json = tool_text(&result);
         assert!(json.contains("dbo")); // stub rowset echoed through
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["statement_type"], "read");
 
         let mut big = QueryResult {
             columns: vec![],
@@ -552,5 +636,53 @@ mod tests {
             .unwrap();
         assert_eq!(result.is_error, Some(true));
         assert!(tool_text(&result).contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn execute_query_refuses_writes_by_default() {
+        let (mcp, _s, _d) = mcp().await;
+        for query in [
+            "DELETE FROM t",
+            "UPDATE t SET a = 1",
+            "DROP TABLE t",
+            "SELECT * INTO t2 FROM t",
+        ] {
+            let result = mcp
+                .execute_query(Parameters(QueryArgs {
+                    conn_id: 1,
+                    query: query.into(),
+                    database: None,
+                }))
+                .await
+                .unwrap();
+            assert_eq!(result.is_error, Some(true), "{query}");
+            assert!(tool_text(&result).contains("mcp.allow_writes"), "{query}");
+        }
+        // SQL the parser can't read is refused too — never assume a read.
+        let result = mcp
+            .execute_query(Parameters(QueryArgs {
+                conn_id: 1,
+                query: "NOT VALID SQL ((".into(),
+                database: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn execute_query_runs_writes_when_enabled() {
+        let (mcp, _s, _d) = mcp_with(1000, true).await;
+        let result = mcp
+            .execute_query(Parameters(QueryArgs {
+                conn_id: 1,
+                query: "DELETE FROM t".into(),
+                database: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false));
+        let json: serde_json::Value = serde_json::from_str(&tool_text(&result)).unwrap();
+        assert_eq!(json["statement_type"], "write");
     }
 }

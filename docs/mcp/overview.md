@@ -6,9 +6,23 @@ through `datara-storage`, fetches credentials from Secret Service, and calls
 the same `DatabaseService`/`DatabaseSession` layer the GUI uses — there is no
 second database stack.
 
-Sessions are opened lazily per `connection_id` and cached for the server's
-lifetime. `mcp.enabled` (default `false`) and `mcp.max_result_rows`
-(default 1000) come from `AppConfig`.
+Sessions are opened lazily per `conn_id` and cached for the server's
+lifetime.
 
-**Implemented:** the `mcp-serve` subcommand exists and exits `2` with a
-not-implemented message. **Pending:** rmcp server + tools — phase 7.
+## Enabling
+
+MCP is opt-in. Set in `config.toml` (see `docs/mcp/security.md` for why the
+defaults are conservative):
+
+```toml
+[mcp]
+enabled = true          # default false — mcp-serve refuses when unset
+max_result_rows = 1000  # row cap per tool call
+allow_writes = false    # default false — non-SELECT statements refused
+```
+
+When `enabled` is false, `datara mcp-serve` prints a message naming the
+config file and exits 0 — it never serves a disabled configuration.
+
+Client setup (Claude Desktop and similar): see
+[`docs/integrations/mcp.md`](../integrations/mcp.md).

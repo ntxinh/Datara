@@ -40,7 +40,14 @@ pub async fn run() -> anyhow::Result<()> {
 
     tracing::info!(
         max_rows = config.mcp.max_result_rows,
+        allow_writes = config.mcp.allow_writes,
         "serving MCP on stdio"
     );
-    datara_mcp_server::serve_stdio(service, storage, config.mcp.max_result_rows as usize).await
+    datara_mcp_server::serve_stdio(
+        service,
+        storage,
+        config.mcp.max_result_rows as usize,
+        config.mcp.allow_writes,
+    )
+    .await
 }

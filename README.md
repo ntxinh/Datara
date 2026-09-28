@@ -23,7 +23,7 @@ with a Slint UI. TablePlus-style: fast, keyboard-first, no Electron.
 | SQL editor: highlighting, statement detection, Ctrl+Enter | 🚧 planned (phase 4) |
 | Virtualized data grid with copy/export | 🚧 planned (phase 5) |
 | Query history in local SQLite | 🚧 planned (phase 6) |
-| MCP server (stdio) for agentic clients | 🚧 planned (phase 7) |
+| MCP server (stdio) for agentic clients | ✅ working |
 | RPM and Flatpak packaging | 🚧 planned (phase 8) |
 
 ## Install
@@ -47,9 +47,11 @@ details.
 
 ## MCP server
 
-`datara mcp-serve` will expose connections and query tools over stdio to
-agentic clients. Status: **planned** (phase 7) — the subcommand exists but
-exits with "not yet implemented".
+`datara mcp-serve` exposes connections and query tools over stdio to agentic
+clients (six tools: list_connections, list_databases, list_tables,
+describe_table, search_schema, execute_query). Opt-in — set `mcp.enabled =
+true` in `config.toml`, then point the client at `datara mcp-serve`.
+Setup: `docs/integrations/mcp.md`.
 
 ## Security
 

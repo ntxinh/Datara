@@ -1,18 +1,31 @@
 # MCP tools
 
-Six tools, all taking explicit identifiers — no ambient "current connection":
+Six tools, all taking explicit identifiers — no ambient "current connection".
+`conn_id` values come from `list_connections`. `database`/`schema` arguments
+are optional where noted: omitted `database` falls back to the profile's
+configured database, then `master`; omitted `schema` defaults to `dbo`.
 
 | Tool | Args | Returns |
 |---|---|---|
-| `list_connections` | — | stored profiles (no secrets) |
-| `list_databases` | `connection_id` | `DatabaseInfo[]` |
-| `list_tables` | `connection_id`, `database` | `TableInfo[]` |
-| `describe_table` | `connection_id`, `database`, `schema`, `table` | `TableDescription` |
-| `search_schema` | `connection_id`, `database`, `pattern` | matching tables/columns |
-| `execute_query` | `connection_id`, `database`, `query` | `QueryResult` capped at `mcp.max_result_rows` with `truncated` |
+| `list_connections` | — | `{connections: [{id,name,host,port,database,username}], truncated}` — no secrets |
+| `list_databases` | `conn_id` | `{databases: [{name}], truncated}` |
+| `list_tables` | `conn_id`, `database?`, `schema?` | `{tables: [{schema,name,kind}], truncated}` — `kind` is `"table"`/`"view"` |
+| `describe_table` | `conn_id`, `table`, `database?`, `schema?` | `{table: {schema,name,columns[],indexes[]}, truncated}` |
+| `search_schema` | `conn_id`, `query`, `database?` | `{tables: [{schema,name,kind}], truncated}` — LIKE wildcards `%`/`_` work |
+| `execute_query` | `conn_id`, `query`, `database?` | `{statement_type, columns, rows, rows_affected, truncated}` |
 
-Schemas are declared with `schemars`; results serialize the domain types.
-Read vs. write is distinguished so agents can gate mutating calls.
+`search_schema`'s `query` is a name fragment matched case-insensitively via
+SQL `LIKE`; `[` is escaped, `'` is safe.
 
-**Implemented:** none — tool surface is the contract. **Pending:** phase 7
-(task 7.2).
+## `execute_query` policy
+
+Each result reports `statement_type`: `"read"` when every statement in the
+batch parses to a `SELECT`, `"write"` otherwise. With `mcp.allow_writes =
+false` (the default) write statements — and SQL the parser cannot read —
+are refused with a tool error naming the config key to change.
+
+Rows are capped at `mcp.max_result_rows` (default 1000); every list-shaped
+result carries a `truncated` boolean so a capped answer never looks complete.
+
+Errors surface as tool-level error content (`isError: true`) rather than
+JSON-RPC errors, so the model can read the message and react.

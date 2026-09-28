@@ -67,6 +67,10 @@ pub struct McpConfig {
     pub enabled: bool,
     /// Maximum rows a single MCP tool call may return.
     pub max_result_rows: u32,
+    /// Whether `execute_query` accepts non-SELECT statements. Default
+    /// `false`: only read queries run; anything the parser can't prove is a
+    /// read is refused (spec §17).
+    pub allow_writes: bool,
 }
 
 impl Default for McpConfig {
@@ -74,6 +78,7 @@ impl Default for McpConfig {
         Self {
             enabled: false,
             max_result_rows: 1000,
+            allow_writes: false,
         }
     }
 }
@@ -147,6 +152,7 @@ mod tests {
         assert_eq!(cfg.appearance.theme, "system");
         assert!(!cfg.mcp.enabled);
         assert_eq!(cfg.mcp.max_result_rows, 1000);
+        assert!(!cfg.mcp.allow_writes);
         assert_eq!(AppConfig::default_port(), 1433);
     }
 

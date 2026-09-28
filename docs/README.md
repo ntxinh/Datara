@@ -22,6 +22,7 @@ Top-level docs live in the repo root: `../README.md`, `../DESIGN.md`,
 - [mcp/overview.md](mcp/overview.md) — stdio server, shared services
 - [mcp/tools.md](mcp/tools.md) — tool list and contracts
 - [mcp/security.md](mcp/security.md) — credential handling, scoping, limits
+- [integrations/mcp.md](integrations/mcp.md) — client setup (Claude Desktop & co.)
 
 ## Security
 

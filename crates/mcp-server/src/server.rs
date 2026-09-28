@@ -27,15 +27,24 @@ pub struct DataraMcp<D: DatabaseDriver + 'static> {
     pub(crate) service: Arc<DatabaseService<D>>,
     pub(crate) storage: Arc<Storage>,
     pub(crate) max_rows: usize,
+    /// `mcp.allow_writes`: when false, `execute_query` refuses anything the
+    /// SQL parser can't prove is a read (spec §17).
+    pub(crate) allow_writes: bool,
     pub(crate) tool_router: ToolRouter<Self>,
 }
 
 impl<D: DatabaseDriver + 'static> DataraMcp<D> {
-    pub fn new(service: Arc<DatabaseService<D>>, storage: Arc<Storage>, max_rows: usize) -> Self {
+    pub fn new(
+        service: Arc<DatabaseService<D>>,
+        storage: Arc<Storage>,
+        max_rows: usize,
+        allow_writes: bool,
+    ) -> Self {
         Self {
             service,
             storage,
             max_rows,
+            allow_writes,
             tool_router: Self::tool_router(),
         }
     }
@@ -67,6 +76,7 @@ impl<D: DatabaseDriver + 'static> Clone for DataraMcp<D> {
             service: Arc::clone(&self.service),
             storage: Arc::clone(&self.storage),
             max_rows: self.max_rows,
+            allow_writes: self.allow_writes,
             tool_router: self.tool_router.clone(),
         }
     }
@@ -107,8 +117,9 @@ pub async fn serve_stdio<D: DatabaseDriver + 'static>(
     service: Arc<DatabaseService<D>>,
     storage: Arc<Storage>,
     max_rows: usize,
+    allow_writes: bool,
 ) -> anyhow::Result<()> {
-    let server = DataraMcp::new(service, storage, max_rows);
+    let server = DataraMcp::new(service, storage, max_rows, allow_writes);
     let running = server.serve(rmcp::transport::stdio()).await?;
     running.waiting().await?;
     Ok(())
