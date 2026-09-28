@@ -194,8 +194,9 @@ fn history_entry_has_no_credential_field() {
     );
 }
 
-/// The SQLite file holds profile metadata; `Storage::open` must pin it to
-/// owner-only `0600` regardless of umask.
+/// The SQLite file holds profile metadata; `Storage::open` must pin it —
+/// plus WAL/SHM sidecars, which carry the same data — to owner-only
+/// `0600` regardless of umask.
 #[cfg(unix)]
 #[tokio::test]
 async fn db_file_is_owner_only() {
@@ -203,11 +204,36 @@ async fn db_file_is_owner_only() {
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("app.db");
+
+    // Seed a WAL-mode DB with live -wal/-shm sidecars via a separate
+    // connection; it stays open so SQLite can't checkpoint the files
+    // away before `Storage::open` tightens them.
+    let wal_pool = sqlx::SqlitePool::connect_with(
+        sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal),
+    )
+    .await
+    .unwrap();
+    sqlx::query("CREATE TABLE wal_probe (a INTEGER)")
+        .execute(&wal_pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO wal_probe VALUES (1)")
+        .execute(&wal_pool)
+        .await
+        .unwrap();
+
     let _storage = Storage::open(&path).await.unwrap();
-    assert_eq!(
-        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
+    for suffix in ["", "-wal", "-shm"] {
+        let p = format!("{}{}", path.display(), suffix);
+        assert_eq!(
+            std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "{p}"
+        );
+    }
 }
 
 /// `SavedRepo` round-trip: save → list → get → delete keeps name and query
