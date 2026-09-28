@@ -11,3 +11,8 @@ sqlparser.workspace = true
 
 [dev-dependencies]
 rstest.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "statements"
+harness = false
