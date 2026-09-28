@@ -60,5 +60,6 @@ lives under `~/.var/app/io.github.ntxinh.Datara/`, not
 renamed upstream).
 
 **Implemented:** manifest, vendored cargo sources, `make flatpak`
-target, release job. **Verified:** local `flatpak-builder` build — see
-the task 8.3 report for proof status.
+target, release job. **Verified:** manifest parse + offline vendored cargo
+build proven locally; full sandboxed build blocked by flathub bandwidth at
+task time — see the task 8.3 report.
