@@ -19,7 +19,7 @@ use crate::commands;
 use crate::editor_ui::{line_col, line_count, EditorState};
 use crate::schema_tree::SchemaTree;
 use crate::services::AppServices;
-use crate::{Bridge, MainWindow};
+use crate::{Bridge, MainWindow, Theme};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 /// Build the window, attach callbacks, load the initial sidebar list, run.
@@ -38,12 +38,25 @@ pub fn run(services: AppServices) -> anyhow::Result<()> {
     let ui = UiHandle::new(&window, Arc::clone(&cx));
     let services = Rc::new(services);
 
-    // Initial bridge state: font size + first tab.
+    // Initial bridge state: theme, persisted layout, font size, tabs.
     {
         let bridge = window.global::<Bridge>();
+        // `[appearance] theme`: only "light" flips the palette; "system"
+        // resolves dark until OS probing lands (theme.slint).
+        window
+            .global::<Theme>()
+            .set_dark(services.config.appearance.theme != "light");
         bridge.set_editor_font_size(services.config.editor.font_size.into());
         bridge.set_cursor_position("Ln 1, Col 1".into());
-        push_tabs(&bridge, &cx.editor.lock());
+        bridge.set_sidebar_width(services.config.workspace.sidebar_width as i32);
+        bridge.set_editor_split(services.config.workspace.editor_split);
+        let mut editor = cx.editor.lock();
+        editor.restore(&services.config.workspace.open_tabs);
+        push_tabs(&bridge, &editor);
+        let text = editor.active_tab().text.clone();
+        bridge.set_editor_text(text.clone().into());
+        bridge.set_line_count(line_count(&text) as i32);
+        bridge.set_highlight_spans(spans_model(&text));
     }
 
     // Initial sidebar population.
@@ -534,6 +547,59 @@ pub fn run(services: AppServices) -> anyhow::Result<()> {
             });
         });
     }
+    {
+        // Tab key → insert `[editor] tab_size` spaces at the caret.
+        let cx = Arc::clone(&cx);
+        let weak = window.as_weak();
+        let tab_size = services.config.editor.tab_size;
+        bridge.on_insert_tab(move || {
+            let Some(win) = weak.upgrade() else { return };
+            let bridge = win.global::<Bridge>();
+            let mut editor = cx.editor.lock();
+            let mut text = bridge.get_editor_text().to_string();
+            let mut caret = editor.cursor.min(text.len());
+            while !text.is_char_boundary(caret) {
+                caret -= 1;
+            }
+            let spaces = " ".repeat(tab_size as usize);
+            text.insert_str(caret, &spaces);
+            caret += spaces.len();
+            editor.set_caret(caret, caret);
+            editor.stash(text.clone(), caret);
+            let jump = editor.cursor_jump(caret);
+            bridge.set_editor_text(text.clone().into());
+            bridge.set_line_count(line_count(&text) as i32);
+            bridge.set_highlight_spans(spans_model(&text));
+            bridge.set_set_cursor(jump);
+            bridge.set_completions(ModelRc::new(VecModel::from(Vec::<SharedString>::new())));
+        });
+    }
+
+    // Persist `[workspace]` — sidebar width, editor split, tab contents —
+    // back into config.toml before the window closes.
+    {
+        let services = Rc::clone(&services);
+        let cx = Arc::clone(&cx);
+        let weak = window.as_weak();
+        window.window().on_close_requested(move || {
+            if let Some(win) = weak.upgrade() {
+                let bridge = win.global::<Bridge>();
+                let mut editor = cx.editor.lock();
+                let caret = editor.cursor;
+                editor.stash(bridge.get_editor_text().to_string(), caret);
+                let mut config = services.config.clone();
+                config.workspace.sidebar_width = bridge.get_sidebar_width().max(0) as u32;
+
+                config.workspace.editor_split = bridge.get_editor_split();
+                config.workspace.open_tabs = editor.tabs.iter().map(|t| t.text.clone()).collect();
+                drop(editor);
+                if let Err(e) = config.save(&services.paths) {
+                    tracing::warn!("cannot save workspace state: {e}");
+                }
+            }
+            slint::CloseRequestResponse::HideWindow
+        });
+    }
     window.run()?;
     Ok(())
 }
@@ -971,7 +1037,7 @@ mod tests {
         // doesn't depend on hardcoded pixel geometry.
         let pt = |x: f64, y: f64| slint::LogicalPosition::new(x as f32, y as f32);
         let mut hit = None;
-        'scan: for y in (440..680).step_by(4) {
+        'scan: for y in (120..680).step_by(4) {
             for x in (270..700).step_by(10) {
                 win.dispatch_event(WindowEvent::PointerPressed {
                     position: pt(x as f64, y as f64),
@@ -1030,9 +1096,10 @@ mod tests {
         // avoiding geometry guesses.
         let w_before = bridge.get_columns().row_data(0).unwrap().width;
         let mut resized = None;
-        'hscan: for hy in (470..510).step_by(2) {
-            // col0 edge ≈ sidebar(264) + 140; probe ±8px around it.
-            for hx in (396..=412).step_by(2) {
+        'hscan: for hy in (60..660).step_by(2) {
+            // col0 edge = sidebar(240) + 4px handle + col0 width.
+            let edge = 244 + w_before;
+            for hx in (edge - 8..=edge + 8).step_by(2) {
                 win.dispatch_event(WindowEvent::PointerPressed {
                     position: pt(hx as f64, hy as f64),
                     button: slint::platform::PointerEventButton::Left,
@@ -1106,16 +1173,15 @@ mod tests {
             let i = (y * w + x) * 4;
             [px[i], px[i + 1], px[i + 2]]
         };
-        // The results pane is the bottom third of the window; the sorted
-        // grid paints fg-colored text there.
+        // The results pane fills the bottom half (editor-split = 0.5);
+        // the sorted rows paint text under the header. fg cells and the
+        // dimmed NULL cell (0.45 opacity) both clear this brightness bar;
+        // bg/panel/border colors don't.
         let mut fg_px = 0usize;
-        for y in (h * 2 / 3)..(h - 30) {
-            for x in 280..w.saturating_sub(10) {
+        for y in (h / 2 + 30)..(h - 60) {
+            for x in 250..w.saturating_sub(10) {
                 let p = at(x, y);
-                if p.iter()
-                    .zip([0xCD, 0xD6, 0xF4])
-                    .all(|(a, b)| a.abs_diff(b) < 30)
-                {
+                if p[0] > 60 && p[1] > 60 && p[2] > 80 {
                     fg_px += 1;
                 }
             }

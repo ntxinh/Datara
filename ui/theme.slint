@@ -1,7 +1,8 @@
 // Catppuccin-ish palette (Mocha dark / Latte light).
-// `dark` will be bound to Palette/color-scheme when light mode support lands.
+// `dark` is driven by `[appearance] theme` in config.toml — set once at
+// startup from Rust; "system" resolves to dark until OS probing lands.
 export global Theme {
-    out property<bool> dark: true;
+    in-out property<bool> dark: true;
     out property<color> bg: dark ? #1e1e2e : #fafafa;
     out property<color> fg: dark ? #cdd6f4 : #4c4f69;
     out property<color> panel: dark ? #181825 : #e6e9ef;

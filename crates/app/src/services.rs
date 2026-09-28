@@ -62,6 +62,9 @@ struct RunningQuery {
 pub struct AppServices {
     pub runtime: Runtime,
     pub backend: Arc<Backend>,
+    /// XDG dirs — kept so the GUI can write `[workspace]` back to
+    /// `config.toml` on window close.
+    pub paths: AppPaths,
     pub config: AppConfig,
 }
 
@@ -91,6 +94,7 @@ impl AppServices {
             runtime,
             backend,
             config,
+            paths,
         })
     }
 }

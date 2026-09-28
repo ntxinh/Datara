@@ -134,6 +134,12 @@ export component QueryEditor inherits Rectangle {
                         return accept;
                     }
                 }
+                // Plain Tab inserts `[editor] tab_size` spaces via Rust
+                // (TextInput has no insert API); Ctrl+Tab stays a command.
+                if (event.text == Key.Tab && !event.modifiers.control && !event.modifiers.alt) {
+                    Bridge.insert-tab();
+                    return accept;
+                }
                 if (Bridge.command(event.text, event.modifiers.control, event.modifiers.shift, event.modifiers.alt)) {
                     return accept;
                 }

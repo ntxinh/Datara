@@ -146,6 +146,23 @@ impl EditorState {
         id
     }
 
+    /// Rebuild tabs from persisted `[workspace] open_tabs` (each entry is
+    /// a tab's SQL text). Empty → the default single blank tab.
+    pub fn restore(&mut self, texts: &[String]) {
+        if texts.is_empty() {
+            return;
+        }
+        self.tabs.clear();
+        for (i, text) in texts.iter().enumerate() {
+            self.open_sql_tab(format!("Query {}", i + 1), text.clone(), None, None);
+        }
+        self.untitled = texts.len() as u32;
+        // Back on the first tab — the active index isn't persisted.
+        self.active = 0;
+        self.cursor = 0;
+        self.anchor = 0;
+    }
+
     /// Persist the live editor text/caret into the active tab — called
     /// before any switch/close/execute so `tabs[active]` is current.
     pub fn stash(&mut self, text: String, cursor: usize) {

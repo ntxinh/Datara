@@ -13,6 +13,7 @@ import { HistoryPanel } from "pages/history.slint";
 // Re-export so Rust's include_modules! sees the generated types.
 export { ConnForm, TreeNode, TabItem, HighlightSpan, CommandItem,
          GridCol, GridCell, GridRow, GridSel, HistoryItem, SavedItem, Bridge } from "bridge.slint";
+export { Theme } from "theme.slint";
 
 export component MainWindow inherits Window {
     title: "Datara";
@@ -22,7 +23,8 @@ export component MainWindow inherits Window {
     background: Theme.bg;
 
     /// Sidebar width, dragged by the 4px handle between sidebar and editor.
-    property<length> sidebar-width: 260px;
+    /// Restored from `[workspace] sidebar_width` via Bridge.
+    property<length> sidebar-width: Bridge.sidebar-width * 1px;
 
     init => {
         editor.focus-editor();
@@ -103,10 +105,12 @@ export component MainWindow inherits Window {
                     width: 4px;
                     background: resize-ta.has-hover || resize-ta.pressed ? Theme.accent : Theme.border;
                     resize-ta := TouchArea {
+                        mouse-cursor: ew-resize;
                         property<length> start-w;
                         moved => {
                             if (self.pressed) {
                                 root.sidebar-width = max(160px, min(480px, self.start-w + self.mouse-x - self.pressed-x));
+                                Bridge.sidebar-width = root.sidebar-width / 1px;
                             }
                         }
                         pointer-event(e) => {
@@ -117,21 +121,40 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                VerticalLayout {
+                panes := VerticalLayout {
                     horizontal-stretch: 1;
                     spacing: 0;
 
                     TabStrip { }
 
                     editor := QueryEditor {
-                        vertical-stretch: 2;
+                        vertical-stretch: Bridge.editor-split;
                     }
 
-                    Rectangle { height: 1px; background: Theme.border; }
+                    // 4px drag handle splitting editor and result grid —
+                    // the ratio persists as `[workspace] editor_split`.
+                    Rectangle {
+                        height: 4px;
+                        background: split-ta.has-hover || split-ta.pressed ? Theme.accent : Theme.border;
+                        split-ta := TouchArea {
+                            mouse-cursor: ns-resize;
+                            property<length> start-h;
+                            moved => {
+                                if (self.pressed) {
+                                    Bridge.editor-split = max(0.15, min(0.85, (self.start-h + self.mouse-y - self.pressed-y) / panes.height));
+                                }
+                            }
+                            pointer-event(e) => {
+                                if (e.kind == PointerEventKind.down) {
+                                    self.start-h = Bridge.editor-split * panes.height;
+                                }
+                            }
+                        }
+                    }
 
                     // Result grid (Task 5.2).
                     ResultGrid {
-                        vertical-stretch: 1;
+                        vertical-stretch: 1 - Bridge.editor-split;
                     }
                     // Query-history bottom pane (Task 6.1) — sits between
                     // the result grid and the status bar.

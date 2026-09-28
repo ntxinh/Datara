@@ -237,6 +237,18 @@ export global Bridge {
     /// to do (nothing when the popup is hidden).
     callback completion-action(string);
 
+    /// Tab key pressed: Rust inserts `[editor] tab_size` spaces at the
+    /// caret (TextInput has no insert API).
+    callback insert-tab();
+
+    // ── Workspace layout (Task 9.1) ─────────────────────────────────
+    /// Sidebar width in px — mirrored from MainWindow's drag handle,
+    /// persisted to `[workspace] sidebar_width` on close.
+    in-out property<int> sidebar-width: 240;
+    /// Editor pane share of the editor/grid split (0–1) — mirrored from
+    /// the split handle, persisted to `[workspace] editor_split`.
+    in-out property<float> editor-split: 0.5;
+
     // ── Execution (Task 4.3) ─────────────────────────────────────────
     /// Stop button: abort the query running on the active tab (or the only
     /// running query when the user switched tabs mid-flight).
