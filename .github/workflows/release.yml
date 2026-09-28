@@ -64,3 +64,25 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: packaging/rpm/_build/{RPMS,SRPMS}/**/*.rpm
+  # Flatpak bundle via the official flatpak-github-actions action
+  # (formerly bilelmoussaoui/flatpak-github-actions). Builds the manifest
+  # with vendored cargo sources and publishes the bundle.
+  flatpak:
+    runs-on: ubuntu-latest
+    container:
+      image: bilelmoussaoui/flatpak-github-actions:freedesktop-25.08
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: flatpak/flatpak-github-actions@v8
+        with:
+          bundle: datara.flatpak
+          manifest-path: packaging/flatpak/io.github.ntxinh.Datara.yml
+          runtime-repo: https://flathub.org/repo/flathub.flatpakrepo
+          verbose: true
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: datara.flatpak

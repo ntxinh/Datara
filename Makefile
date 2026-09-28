@@ -1,4 +1,4 @@
-.PHONY: setup build run test test-integration lint fmt fmt-check check audit deny clean docs-check rpm
+.PHONY: setup build run test test-integration lint fmt fmt-check check audit deny clean docs-check rpm flatpak
 # Toolchain + dev tools (cargo-audit, cargo-deny) + fontconfig headers for slint.
 setup:
 	mise install
@@ -51,6 +51,18 @@ rpm:
 	git archive --format=tar.gz --prefix="datara-$$VERSION/" -o "$$TOPDIR/SOURCES/datara-$$VERSION.tar.gz" HEAD; \
 	cp packaging/rpm/datara.spec "$$TOPDIR/SPECS/"; \
 	rpmbuild -ba --define "_topdir $$TOPDIR" "$$TOPDIR/SPECS/datara.spec"
+
+# Build the Flatpak bundle. Uses vendored cargo sources
+# (packaging/flatpak/cargo-sources.json) for an offline build inside the
+# sandbox. Requires flatpak-builder plus the org.freedesktop.Sdk and
+# rust-stable extension (fetched from flathub by --install-deps-from).
+# Artifacts land in packaging/flatpak/{build,repo} and ./datara.flatpak.
+flatpak:
+	flatpak-builder --force-clean --install-deps-from=flathub \
+		packaging/flatpak/build packaging/flatpak/io.github.ntxinh.Datara.yml
+	flatpak build-export packaging/flatpak/repo packaging/flatpak/build
+	flatpak build-bundle packaging/flatpak/repo datara.flatpak \
+		io.github.ntxinh.Datara
 
 # Verify every file linked from docs/README.md exists.
 docs-check:

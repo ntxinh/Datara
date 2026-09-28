@@ -9,5 +9,5 @@ runtime deps minimal.
 Target: `rpmbuild -ba packaging/rpm/datara.spec` on Fedora produces an
 installable `datara` RPM.
 
-**Implemented:** nothing — spec file pending. **Pending:** phase 8
-(task 8.2).
+**Implemented:** `packaging/rpm/datara.spec` + `make rpm` target; built
+datara-0.1.0 RPMs under `packaging/rpm/_build/` on Fedora 44 (task 8.2).
