@@ -31,49 +31,73 @@ impl DatabaseDriver for MssqlDriver {
         profile: &ConnectionProfile,
         credentials: &Credentials,
     ) -> Result<Box<dyn DatabaseSession>> {
-        let mut config = Config::new();
-        config.host(&profile.host);
-        config.port(profile.port);
-        if let Some(db) = &profile.database {
-            config.database(db);
-        }
-        config.authentication(AuthMethod::sql_server(
-            &credentials.username,
-            credentials.password.expose_secret(),
-        ));
-        config.encryption(match profile.encryption {
-            EncryptionMode::Disabled => EncryptionLevel::Off,
-            EncryptionMode::Preferred => EncryptionLevel::On,
-            EncryptionMode::Required => EncryptionLevel::Required,
-        });
-        if profile.trust_server_certificate {
-            config.trust_cert();
-        }
+        connect_inner(profile, credentials, CONNECT_TIMEOUT).await
+    }
+}
 
-        let tcp = tokio::time::timeout(
-            CONNECT_TIMEOUT,
-            TcpStream::connect((profile.host.as_str(), profile.port)),
-        )
+/// TCP connect + Tiberius handshake (prelogin, TLS, login) — the whole
+/// thing under `timeout`, not just the socket: a peer that accepts TCP but
+/// stalls prelogin would otherwise park `connect` forever and leave the
+/// caller's session bookkeeping hanging.
+async fn connect_inner(
+    profile: &ConnectionProfile,
+    credentials: &Credentials,
+    timeout: Duration,
+) -> Result<Box<dyn DatabaseSession>> {
+    let mut config = Config::new();
+    config.host(&profile.host);
+    config.port(profile.port);
+    if let Some(db) = &profile.database {
+        config.database(db);
+    }
+    config.authentication(AuthMethod::sql_server(
+        &credentials.username,
+        credentials.password.expose_secret(),
+    ));
+    config.encryption(match profile.encryption {
+        EncryptionMode::Disabled => EncryptionLevel::Off,
+        EncryptionMode::Preferred => EncryptionLevel::On,
+        EncryptionMode::Required => EncryptionLevel::Required,
+    });
+    if profile.trust_server_certificate {
+        config.trust_cert();
+    }
+
+    let tcp = tokio::time::timeout(
+        timeout,
+        TcpStream::connect((profile.host.as_str(), profile.port)),
+    )
+    .await
+    .map_err(|_| DomainError::Connection {
+        message: format!(
+            "connection to {}:{} timed out after {}s",
+            profile.host,
+            profile.port,
+            timeout.as_secs()
+        ),
+    })?
+    .map_err(|e| DomainError::Connection {
+        message: format!(
+            "could not connect to {}:{} — {e}",
+            profile.host, profile.port
+        ),
+    })?;
+    tcp.set_nodelay(true).ok();
+
+    // Dropping the future on elapse drops the TCP stream — no partial
+    // session escapes.
+    let client = tokio::time::timeout(timeout, Client::connect(config, tcp.compat_write()))
         .await
         .map_err(|_| DomainError::Connection {
             message: format!(
-                "connection to {}:{} timed out after 10s",
-                profile.host, profile.port
+                "login to {}:{} timed out after {}s",
+                profile.host,
+                profile.port,
+                timeout.as_secs()
             ),
         })?
-        .map_err(|e| DomainError::Connection {
-            message: format!(
-                "could not connect to {}:{} — {e}",
-                profile.host, profile.port
-            ),
-        })?;
-        tcp.set_nodelay(true).ok();
-
-        let client = Client::connect(config, tcp.compat_write())
-            .await
-            .map_err(map_tiberius_error)?;
-        Ok(Box::new(MssqlSession::new(client)))
-    }
+        .map_err(map_tiberius_error)?;
+    Ok(Box::new(MssqlSession::new(client)))
 }
 
 /// Map a Tiberius error to a domain error. Auth error codes are detected by
@@ -142,5 +166,51 @@ mod tests {
             }
             other => panic!("expected Query, got {other:?}"),
         }
+    }
+    /// Prelogin stall: a listener that accepts the TCP connection but never
+    /// answers the handshake. `connect_inner` must time out (not hang) and
+    /// surface a Connection error — before the fix only TcpStream::connect
+    /// was bounded.
+    #[tokio::test]
+    async fn handshake_stall_times_out() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Accept and hold — never write a prelogin response.
+        tokio::spawn(async move {
+            while let Ok((s, _)) = listener.accept().await {
+                std::mem::forget(s);
+            }
+        });
+
+        let profile = ConnectionProfile {
+            id: datara_domain::ConnectionId(0),
+            name: "stall".into(),
+            host: "127.0.0.1".into(),
+            port,
+            database: None,
+            username: "sa".into(),
+            authentication: datara_domain::AuthenticationMode::SqlPassword,
+            encryption: EncryptionMode::Disabled,
+            trust_server_certificate: true,
+            secret_reference: datara_domain::SecretReference("t".into()),
+        };
+        let creds = Credentials {
+            username: "sa".into(),
+            password: secrecy::SecretString::from("x".to_string()),
+        };
+        let started = std::time::Instant::now();
+        let err = connect_inner(&profile, &creds, Duration::from_millis(200))
+            .await
+            .err()
+            .expect("stalled handshake must fail");
+        assert!(
+            matches!(err, DomainError::Connection { .. }),
+            "expected Connection, got {err:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "timeout didn't fire: {:?}",
+            started.elapsed()
+        );
     }
 }
