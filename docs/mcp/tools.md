@@ -27,5 +27,14 @@ are refused with a tool error naming the config key to change.
 Rows are capped at `mcp.max_result_rows` (default 1000); every list-shaped
 result carries a `truncated` boolean so a capped answer never looks complete.
 
+The classification walks the full query tree — `SELECT INTO`, CTE bodies,
+UNION arms, and derived tables are checked, not just the top-level keyword.
+Table-valued functions (`OPENQUERY`, `OPENROWSET`, `OPENXML`, `UNNEST`,
+`JSON_TABLE`, …) are treated as **not read**: they can execute remote DML or
+carry connection strings, so `allow_writes = false` refuses them. SQL the
+parser cannot read is likewise refused — the parser never vouches for what
+it couldn't parse. (Expression-level subqueries in `WHERE`/select lists are
+not walked; T-SQL forbids writes there anyway, so no bypass exists.)
+
 Errors surface as tool-level error content (`isError: true`) rather than
 JSON-RPC errors, so the model can read the message and react.

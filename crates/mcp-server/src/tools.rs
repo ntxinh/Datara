@@ -167,6 +167,9 @@ fn set_expr_is_read(e: &SetExpr) -> bool {
 
 fn table_factor_is_read(t: &TableFactor) -> bool {
     match t {
+        // Bare table name (args: None). `args: Some` means a table-valued
+        // function call — refused below with the other function factors.
+        TableFactor::Table { args: None, .. } => true,
         TableFactor::Derived { subquery, .. } => query_is_read(subquery),
         TableFactor::NestedJoin {
             table_with_joins, ..
@@ -177,7 +180,14 @@ fn table_factor_is_read(t: &TableFactor) -> bool {
                     .iter()
                     .all(|j| table_factor_is_read(&j.relation))
         }
-        _ => true,
+        TableFactor::Pivot { table, .. } | TableFactor::Unpivot { table, .. } => {
+            table_factor_is_read(table)
+        }
+        // Anything else — TVFs (`Table{args:Some}`/`Function`/`TableFunction`),
+        // `OPENQUERY`/`OPENROWSET`/`OPENXML`, `UNNEST`, `JSON_TABLE`, and every
+        // factor not itemized — is refused. TVFs can carry remote writes
+        // (OPENQUERY) or connection strings (OPENROWSET); the gate errs closed.
+        _ => false,
     }
 }
 
@@ -357,10 +367,12 @@ impl<D: DatabaseDriver + 'static> DataraMcp<D> {
                 Ok(Err(e)) => Ok(tool_err(e)),
                 Ok(Ok(mut result)) => {
                     cap_rows(&mut result, self.max_rows);
+                    let row_count = result.rows.len();
                     json_result(serde_json::json!({
                         "statement_type": if read_only { "read" } else { "write" },
                         "columns": result.columns,
                         "rows": result.rows,
+                        "row_count": row_count,
                         "rows_affected": result.rows_affected,
                         "truncated": result.truncated,
                     }))
@@ -611,6 +623,8 @@ mod tests {
         assert!(json.contains("dbo")); // stub rowset echoed through
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["statement_type"], "read");
+        // §18: row_count is the emitted row count (post-cap).
+        assert_eq!(parsed["row_count"], 1);
 
         let mut big = QueryResult {
             columns: vec![],
@@ -646,6 +660,12 @@ mod tests {
             "UPDATE t SET a = 1",
             "DROP TABLE t",
             "SELECT * INTO t2 FROM t",
+            // Table-function smuggling: OPENQUERY can run remote DML,
+            // OPENROWSET embeds connection strings — both refused.
+            "SELECT * FROM OPENQUERY(lk, 'DELETE FROM t')",
+            "SELECT * FROM OPENROWSET('SQLOLEDB','srv';'sa';'pw','SELECT 1')",
+            // CTE bodies are walked too.
+            "WITH x AS (SELECT * INTO t2 FROM t) SELECT * FROM x",
         ] {
             let result = mcp
                 .execute_query(Parameters(QueryArgs {
