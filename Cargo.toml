@@ -28,8 +28,6 @@ slint-build = "1.18"
 i-slint-backend-testing = { version = "1.18", features = ["renderer-software"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "net"] }
 tokio-util = { version = "0.7", features = ["compat"] }
-tokio-stream = "0.1"
-futures-core = "0.3"
 futures-util = "0.3"
 tiberius = { version = "0.13", default-features = false, features = ["tds73", "rustls", "time"] }
 async-trait = "0.1"
@@ -52,7 +50,6 @@ jiff = "0.2"
 uuid = { version = "1", features = ["v4", "serde"] }
 rstest = "0.27"
 testcontainers = "0.28"
-criterion = "0.8"
 dirs = "7"
 parking_lot = "0.12"
 tempfile = "3"

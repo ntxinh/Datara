@@ -20,6 +20,13 @@ allow = [
 
 [advisories]
 yanked = "warn"
+ignore = [
+    # ttf-parser is unmaintained, but only reached through
+    # winit→sctk-adwaita (window-titlebar font parsing) via Slint's winit
+    # backend — no direct API use, no fix available, remove when winit or
+    # Slint migrates to skrifa.
+    "RUSTSEC-2026-0192",
+]
 
 [bans]
 multiple-versions = "warn"
