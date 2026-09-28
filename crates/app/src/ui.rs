@@ -1421,6 +1421,9 @@ mod tests {
         bridge.invoke_close_tab(tab_a);
         assert!(cx.results.lock().get(&tab_a).is_none());
         let before = cx.results.lock().len();
+        // Stand in for a still-in-flight query: terminal events must clear
+        // the Stop button via any_running() even when their tab is dead.
+        bridge.set_query_running(true);
         crate::bridge::apply(
             window,
             &cx,
@@ -1434,6 +1437,10 @@ mod tests {
             cx.results.lock().len(),
             before,
             "result for a closed tab must be dropped, not stashed"
+        );
+        assert!(
+            !bridge.get_query_running(),
+            "terminal event for a closed tab must still update query-running"
         );
         assert_eq!(bridge.get_result_info().as_str(), "Error: boom");
     }

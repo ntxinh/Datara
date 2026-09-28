@@ -238,33 +238,33 @@ pub(crate) fn apply(window: &MainWindow, cx: &Arc<UiCtx>, event: AppEvent) {
                     )
                 }
             };
-            // Stash first — `show_tab_result` reads the slot back.
-            if stash_result(cx, tab, TabResult::Rows(result, info)) {
-                bridge.set_query_running(cx.backend.any_running());
-                if tab == active_tab(cx) {
-                    bridge.set_status(status.into());
-                    show_tab_result(&bridge, cx, tab);
-                }
-                refresh_history(window, cx);
+            // Stash first — `show_tab_result` reads the slot back. The
+            // running flag and history refresh run even when the tab is
+            // closed (stash refused): the query DID finish and the Stop
+            // button + open panel reflect global state.
+            let stashed = stash_result(cx, tab, TabResult::Rows(result, info));
+            bridge.set_query_running(cx.backend.any_running());
+            refresh_history(window, cx);
+            if stashed && tab == active_tab(cx) {
+                bridge.set_status(status.into());
+                show_tab_result(&bridge, cx, tab);
             }
         }
         AppEvent::QueryError { tab, message } => {
-            if stash_result(cx, tab, TabResult::Failed(message.clone())) {
-                bridge.set_query_running(cx.backend.any_running());
-                if tab == active_tab(cx) {
-                    bridge.set_status(message.into());
-                    show_tab_result(&bridge, cx, tab);
-                }
-                refresh_history(window, cx);
+            let stashed = stash_result(cx, tab, TabResult::Failed(message.clone()));
+            bridge.set_query_running(cx.backend.any_running());
+            refresh_history(window, cx);
+            if stashed && tab == active_tab(cx) {
+                bridge.set_status(message.into());
+                show_tab_result(&bridge, cx, tab);
             }
         }
         AppEvent::QueryCancelled { tab } => {
-            if stash_result(cx, tab, TabResult::Cancelled) {
-                bridge.set_query_running(cx.backend.any_running());
-                if tab == active_tab(cx) {
-                    bridge.set_status("Cancelled".into());
-                    show_tab_result(&bridge, cx, tab);
-                }
+            let stashed = stash_result(cx, tab, TabResult::Cancelled);
+            bridge.set_query_running(cx.backend.any_running());
+            if stashed && tab == active_tab(cx) {
+                bridge.set_status("Cancelled".into());
+                show_tab_result(&bridge, cx, tab);
             }
         }
 
