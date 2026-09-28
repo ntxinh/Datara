@@ -13,7 +13,7 @@ env:
 
 jobs:
   # `rpm` job builds the SRPM/binary RPM in a Fedora container and attaches
-  # them to the same release. Flatpak is still pending; tarball is interim.
+  # them to the same release. Flatpak job builds bundle via flatpak-github-actions; tarball is interim.
   package:
     runs-on: ubuntu-latest
     steps:
