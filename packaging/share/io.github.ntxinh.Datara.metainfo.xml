@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.ntxinh.Datara</id>
+  <launchable type="desktop-id">io.github.ntxinh.Datara.desktop</launchable>
+  <name>Datara</name>
+  <summary>Native MSSQL database client</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <developer id="io.github.ntxinh">
+    <name>ntxinh</name>
+  </developer>
+  <description>
+    <p>
+      Datara is a native Linux database client for Microsoft SQL Server,
+      built with Rust and Slint. It provides a connection manager, a SQL
+      editor, a data grid for browsing and editing results, and an MCP
+      server so AI assistants can query your databases.
+    </p>
+  </description>
+  <categories>
+    <category>Development</category>
+    <category>Database</category>
+  </categories>
+  <url type="homepage">https://github.com/ntxinh/Datara</url>
+  <url type="bugtracker">https://github.com/ntxinh/Datara/issues</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-09-28"/>
+  </releases>
+</component>

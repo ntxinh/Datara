@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Datara app icon: rounded square in Theme.accent (#89b4fa) with a
+     white 3x3 table-grid glyph. Source of truth; PNG renders live beside
+     it as datara-{32,48,64,128,256,512}.png. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <rect x="16" y="16" width="480" height="480" rx="96" ry="96" fill="#89b4fa"/>
+  <g stroke="#ffffff" stroke-width="28" fill="none" stroke-linecap="round">
+    <!-- 3x3 table grid, centred -->
+    <rect x="146" y="146" width="220" height="220" rx="12"/>
+    <line x1="219.33" y1="146" x2="219.33" y2="366"/>
+    <line x1="292.67" y1="146" x2="292.67" y2="366"/>
+    <line x1="146" y1="219.33" x2="366" y2="219.33"/>
+    <line x1="146" y1="292.67" x2="366" y2="292.67"/>
+  </g>
+</svg>
