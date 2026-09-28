@@ -15,6 +15,11 @@ BuildRequires:  rust >= 1.98, cargo, gcc-c++, pkgconf-pkg-config
 BuildRequires:  pkgconfig(fontconfig), pkgconfig(freetype2)
 BuildRequires:  desktop-file-utils, libappstream-glib
 Requires:       hicolor-icon-theme
+# winit dlopens the Wayland client stack and femtovg dlopens libEGL; rpm's
+# dep generator can't see them. X11 fallback libs (libX11, libXcursor,
+# libxcb, libxkbcommon-x11) are dlopen-optional — not required.
+Requires:       libwayland-client libwayland-egl libwayland-cursor
+Requires:       libxkbcommon mesa-libEGL
 
 %description
 Datara is a native Rust + Slint MSSQL database client for Linux.
