@@ -403,8 +403,21 @@ mod tests {
 
     #[async_trait]
     impl SecretSource for StubSecrets {
+        async fn save(
+            &self,
+            _reference: &SecretReference,
+            _label: &str,
+            _secret: &SecretString,
+        ) -> DomainResult<()> {
+            Ok(())
+        }
+
         async fn load(&self, _reference: &SecretReference) -> DomainResult<SecretString> {
             Ok(SecretString::from("hunter2"))
+        }
+
+        async fn delete(&self, _reference: &SecretReference) -> DomainResult<()> {
+            Ok(())
         }
     }
 

@@ -32,7 +32,7 @@ pub async fn run() -> anyhow::Result<()> {
     }
 
     let storage = Arc::new(Storage::open(&paths.app_db()).await?);
-    let secrets = Arc::new(SecretStore::connect().await?);
+    let secrets: Arc<dyn datara_database::SecretSource> = Arc::new(SecretStore::connect().await?);
     let service = Arc::new(DatabaseService::<MssqlDriver>::new(
         Arc::clone(&storage),
         Arc::clone(&secrets),

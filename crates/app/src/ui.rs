@@ -12,8 +12,8 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use crate::bridge::{
-    catalog_labels, palette_model, push_tabs, push_tree, run_command, spans_model, AppEvent, UiCtx,
-    UiHandle,
+    activate_tab, catalog_labels, palette_model, push_tabs, push_tree, run_command, spans_model,
+    AppEvent, UiCtx, UiHandle,
 };
 use crate::commands;
 use crate::editor_ui::{line_col, line_count, EditorState};
@@ -29,6 +29,7 @@ pub fn run(services: AppServices) -> anyhow::Result<()> {
     let cx = Arc::new(UiCtx {
         tree: Mutex::new(SchemaTree::default()),
         grid: Mutex::new(crate::grid::GridState::default()),
+        results: Mutex::new(Default::default()),
         editor: Mutex::new(EditorState::default()),
         backend: Arc::clone(&services.backend),
         handle: services.runtime.handle().clone(),
@@ -41,8 +42,9 @@ pub fn run(services: AppServices) -> anyhow::Result<()> {
     // Initial bridge state: theme, persisted layout, font size, tabs.
     {
         let bridge = window.global::<Bridge>();
-        // `[appearance] theme`: only "light" flips the palette; "system"
-        // resolves dark until OS probing lands (theme.slint).
+        // `[appearance] theme`: only "light" flips the palette.
+        // ponytail: "system" resolves dark — read the freedesktop
+        // org.freedesktop.appearance portal when live OS probing is wanted.
         window
             .global::<Theme>()
             .set_dark(services.config.appearance.theme != "light");
@@ -321,14 +323,7 @@ pub fn run(services: AppServices) -> anyhow::Result<()> {
             let caret = editor.cursor;
             editor.stash(bridge.get_editor_text().to_string(), caret);
             editor.new_tab();
-            push_tabs(&bridge, &editor);
-            let jump = editor.cursor_jump(0);
-            bridge.set_editor_text("".into());
-            bridge.set_line_count(1);
-            bridge.set_highlight_spans(ModelRc::new(VecModel::from(
-                Vec::<crate::HighlightSpan>::new(),
-            )));
-            bridge.set_set_cursor(jump);
+            activate_tab(&bridge, &cx, &mut editor, 0);
         });
     }
 
@@ -341,13 +336,10 @@ pub fn run(services: AppServices) -> anyhow::Result<()> {
             };
             let bridge = win.global::<Bridge>();
             let mut editor = cx.editor.lock();
-            if let Some((text, cursor)) = editor.close(id, bridge.get_editor_text().to_string()) {
-                push_tabs(&bridge, &editor);
-                let jump = editor.cursor_jump(cursor);
-                bridge.set_editor_text(text.clone().into());
-                bridge.set_line_count(line_count(&text) as i32);
-                bridge.set_highlight_spans(spans_model(&text));
-                bridge.set_set_cursor(jump);
+            if let Some((_text, cursor)) = editor.close(id, bridge.get_editor_text().to_string()) {
+                // Dead tab's slot goes too — late results for it are dropped.
+                cx.results.lock().remove(&id);
+                activate_tab(&bridge, &cx, &mut editor, cursor);
             }
         });
     }
@@ -361,13 +353,8 @@ pub fn run(services: AppServices) -> anyhow::Result<()> {
             };
             let bridge = win.global::<Bridge>();
             let mut editor = cx.editor.lock();
-            if let Some((text, cursor)) = editor.switch(id, bridge.get_editor_text().to_string()) {
-                push_tabs(&bridge, &editor);
-                let jump = editor.cursor_jump(cursor);
-                bridge.set_editor_text(text.clone().into());
-                bridge.set_line_count(line_count(&text) as i32);
-                bridge.set_highlight_spans(spans_model(&text));
-                bridge.set_set_cursor(jump);
+            if let Some((_text, cursor)) = editor.switch(id, bridge.get_editor_text().to_string()) {
+                activate_tab(&bridge, &cx, &mut editor, cursor);
             }
         });
     }
@@ -1290,6 +1277,165 @@ mod tests {
         assert_eq!(items.row_data(0).unwrap().name.as_str(), "q1");
         bridge.invoke_history_toggle();
         bridge.set_history_tab(0);
+
+        // ── Per-tab result routing ─────────────────────────────────
+        tab_result_routing(&window);
+    }
+
+    /// Per-tab result routing: a query's events are keyed by tab id and
+    /// stashed into `UiCtx::results`. Results landing while another tab is
+    /// visible must NOT touch the grid; switching back restores them.
+    /// `apply` runs synchronously here — dispatch's event-loop hop isn't
+    /// needed to exercise the stash/restore logic.
+    ///
+    /// Runs inside `ui_smoke_keys_and_overlay`, not its own #[test]: the
+    /// Slint testing platform binds to the first thread that touches it and
+    /// cargo runs tests in parallel — a second UI test on another thread
+    /// would hit "platform initialized in another thread".
+    fn tab_result_routing(window: &MainWindow) {
+        use crate::bridge::TabResult;
+        use datara_domain::{QueryColumn, QueryRow, Value};
+
+        let bridge = window.global::<Bridge>();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let backend = runtime.block_on(crate::services::Backend::for_test(tmp.path()));
+        let cx = Arc::new(UiCtx {
+            tree: Mutex::new(SchemaTree::default()),
+            grid: Mutex::new(crate::grid::GridState::default()),
+            results: Mutex::new(Default::default()),
+            editor: Mutex::new(EditorState::default()),
+            backend,
+            handle: runtime.handle().clone(),
+            query_limit: 1000,
+            clipboard: Mutex::new(None),
+        });
+        // Wire switch/close exactly like run() does.
+        {
+            let cx = Arc::clone(&cx);
+            let weak = window.as_weak();
+            bridge.on_switch_tab(move |id| {
+                let Some(win) = weak.upgrade() else { return };
+                let bridge = win.global::<Bridge>();
+                let mut editor = cx.editor.lock();
+                if let Some((_t, cursor)) = editor.switch(id, bridge.get_editor_text().to_string())
+                {
+                    activate_tab(&bridge, &cx, &mut editor, cursor);
+                }
+            });
+        }
+        {
+            let cx = Arc::clone(&cx);
+            let weak = window.as_weak();
+            bridge.on_close_tab(move |id| {
+                let Some(win) = weak.upgrade() else { return };
+                let bridge = win.global::<Bridge>();
+                let mut editor = cx.editor.lock();
+                if let Some((_t, cursor)) = editor.close(id, bridge.get_editor_text().to_string()) {
+                    cx.results.lock().remove(&id);
+                    activate_tab(&bridge, &cx, &mut editor, cursor);
+                }
+            });
+        }
+        let result = |v: i64, n: usize| datara_domain::QueryResult {
+            columns: vec![QueryColumn {
+                name: "n".into(),
+                data_type: "int".into(),
+            }],
+            rows: (0..n)
+                .map(|_| QueryRow {
+                    cells: vec![Value::Int(v)],
+                })
+                .collect(),
+            rows_affected: None,
+            truncated: false,
+        };
+
+        // Tab A (active) runs; switch to a fresh tab B before the result lands.
+        let tab_a = cx.editor.lock().active_tab().id;
+        crate::bridge::apply(window, &cx, AppEvent::QueryStarted { tab: tab_a });
+        assert_eq!(bridge.get_result_info().as_str(), "Running…");
+        {
+            let mut editor = cx.editor.lock();
+            editor.stash("SELECT a".into(), 0);
+            editor.new_tab();
+            activate_tab(&bridge, &cx, &mut editor, 0);
+        }
+        let tab_b = cx.editor.lock().active_tab().id;
+        // Fresh tab: no slot → cleared grid + empty footer.
+        assert_eq!(bridge.get_rows().row_count(), 0);
+        assert_eq!(bridge.get_result_info().as_str(), "");
+
+        // B's own running state shows when B is active; A's result arrives
+        // while B is visible → stash only, grid untouched.
+        bridge.set_status("marker".into());
+        crate::bridge::apply(window, &cx, AppEvent::QueryStarted { tab: tab_b });
+        crate::bridge::apply(
+            window,
+            &cx,
+            AppEvent::QueryResult {
+                tab: tab_a,
+                result: result(1, 3),
+                elapsed_ms: 5,
+            },
+        );
+        assert_eq!(
+            bridge.get_result_info().as_str(),
+            "Running…",
+            "foreign result must not overwrite the visible tab"
+        );
+        assert_eq!(bridge.get_rows().row_count(), 0);
+        assert!(
+            matches!(cx.results.lock().get(&tab_a), Some(TabResult::Rows(..))),
+            "A's result must be stashed under tab A"
+        );
+
+        // Switch to A: its stashed result lands in the grid.
+        bridge.invoke_switch_tab(tab_a);
+        let rows = bridge.get_rows();
+        assert_eq!(rows.row_count(), 3, "A's stashed rows must restore");
+        assert_eq!(
+            rows.row_data(0).unwrap().cells.row_data(0).unwrap().text,
+            "1"
+        );
+        assert_eq!(bridge.get_result_info().as_str(), "3 rows");
+        // Status is a global line — written at event-arrival only for the
+        // then-visible tab, so the marker must still stand.
+        assert_eq!(bridge.get_status().as_str(), "marker");
+
+        // Back on B its own error shows; closing A drops its slot and a
+        // late event for it is discarded entirely.
+        crate::bridge::apply(
+            window,
+            &cx,
+            AppEvent::QueryError {
+                tab: tab_b,
+                message: "boom".into(),
+            },
+        );
+        bridge.invoke_switch_tab(tab_b);
+        assert_eq!(bridge.get_result_info().as_str(), "Error: boom");
+        bridge.invoke_close_tab(tab_a);
+        assert!(cx.results.lock().get(&tab_a).is_none());
+        let before = cx.results.lock().len();
+        crate::bridge::apply(
+            window,
+            &cx,
+            AppEvent::QueryResult {
+                tab: tab_a,
+                result: result(9, 1),
+                elapsed_ms: 1,
+            },
+        );
+        assert_eq!(
+            cx.results.lock().len(),
+            before,
+            "result for a closed tab must be dropped, not stashed"
+        );
+        assert_eq!(bridge.get_result_info().as_str(), "Error: boom");
     }
 
     /// Live Task 5.3 smoke: `AppEvent::PreviewSql` — what double-clicking a
@@ -1346,6 +1492,7 @@ mod tests {
         let cx = Arc::new(UiCtx {
             tree: Mutex::new(SchemaTree::default()),
             grid: Mutex::new(crate::grid::GridState::default()),
+            results: Mutex::new(Default::default()),
             editor: Mutex::new(EditorState::default()),
             backend: Arc::clone(&svc.backend),
             handle: svc.runtime.handle().clone(),

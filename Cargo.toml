@@ -54,3 +54,4 @@ dirs = "7"
 parking_lot = "0.12"
 tempfile = "3"
 criterion = "0.7"
+arboard = { version = "3", default-features = false }

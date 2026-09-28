@@ -8,6 +8,7 @@
 //! the UI thread ever takes the lock; Tokio tasks ship results back as
 //! [`AppEvent`]s.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -49,30 +50,26 @@ pub enum AppEvent {
     Command(Command),
     /// `service.execute` returned a handle — the tab is running.
     QueryStarted {
-        /// Editor tab that started running (Phase 5 grid targeting).
-        #[allow(dead_code)]
+        /// Editor tab that started running.
         tab: i32,
     },
-    /// Query finished with a result. `tab` is unused until Phase 5's grid
-    /// renders per-tab results; the status bar carries the summary.
+    /// Query finished with a result — routed to `tab`'s slot
+    /// ([`UiCtx::results`]), shown only if that tab is active.
     QueryResult {
-        /// Editor tab that produced the result (Phase 5 grid targeting).
-        #[allow(dead_code)]
+        /// Editor tab that produced the result.
         tab: i32,
         result: QueryResult,
         elapsed_ms: u64,
     },
     /// Query failed or timed out; `message` is user-readable.
     QueryError {
-        /// Editor tab the error belongs to (Phase 5 grid targeting).
-        #[allow(dead_code)]
+        /// Editor tab the error belongs to.
         tab: i32,
         message: String,
     },
     /// The user cancelled the query (Stop button / `cancel-query`).
     QueryCancelled {
         /// Editor tab whose query was cancelled.
-        #[allow(dead_code)]
         tab: i32,
     },
     /// `history-search`/`history-delete` finished — swap the panel model.
@@ -94,8 +91,14 @@ pub enum AppEvent {
 /// `UiHandle` must stay `Send` for `dispatch`.
 pub struct UiCtx {
     pub tree: Mutex<SchemaTree>,
-    /// Result grid state (Task 5.2): RowCache, column widths, selection.
+    /// Result grid state for the visible tab (Task 5.2): RowCache, column
+    /// widths, selection.
     pub grid: Mutex<GridState>,
+    /// Last query outcome per editor tab. Terminal `QueryResult`/`QueryError`/
+    /// `QueryCancelled` events stash here keyed by tab id — a query finishing
+    /// while the user views another tab is kept for when they switch back
+    /// instead of overwriting the visible grid.
+    pub results: Mutex<HashMap<i32, TabResult>>,
     pub editor: Mutex<EditorState>,
     pub backend: Arc<Backend>,
     /// Runtime handle to spawn backend work from the UI thread.
@@ -106,6 +109,19 @@ pub struct UiCtx {
     /// the data-control object that keeps copied text alive, so it must
     /// live as long as the app (used by the grid and history copy).
     pub clipboard: Mutex<Option<arboard::Clipboard>>,
+}
+
+/// What one editor tab's grid shows — the slot [`UiCtx::results`] stashes
+/// per tab and [`show_tab_result`] restores on tab switch.
+pub enum TabResult {
+    /// Query in flight — the grid shows "Running…".
+    Running,
+    /// Finished: the domain result plus its `result-info` footer text.
+    Rows(QueryResult, String),
+    /// Failed: the grid footer shows `Error: <message>`.
+    Failed(String),
+    /// Stopped by the user (or timed out after a cancel).
+    Cancelled,
 }
 
 /// Weak handle to the window, safe to move into Tokio tasks.
@@ -188,27 +204,26 @@ pub(crate) fn apply(window: &MainWindow, cx: &Arc<UiCtx>, event: AppEvent) {
             {
                 let mut editor = cx.editor.lock();
                 editor.open_sql_tab(label, sql.clone(), Some(conn_id), database);
-                push_tabs(&bridge, &editor);
-                let jump = editor.cursor_jump(sql.len());
-                bridge.set_editor_text(sql.clone().into());
-                bridge.set_set_cursor(jump);
+                activate_tab(&bridge, cx, &mut editor, sql.len());
             }
-            bridge.set_line_count(line_count(&sql) as i32);
-            bridge.set_highlight_spans(spans_model(&sql));
             // Open-table previews run immediately (TablePro behavior): the
             // same execute entry Ctrl+Enter takes. The preview tab's caret
             // is at 0 → resolve_sql picks the whole statement.
             run_command(window, cx, Command::ExecuteQuery);
         }
         AppEvent::Command(cmd) => run_command(window, cx, cmd),
-        AppEvent::QueryStarted { .. } => {
+        AppEvent::QueryStarted { tab } => {
+            stash_result(cx, tab, TabResult::Running);
             bridge.set_query_running(true);
-            cx.grid.lock().clear(&bridge, "Running…");
+            if tab == active_tab(cx) {
+                cx.grid.lock().clear(&bridge, "Running…");
+            }
         }
         AppEvent::QueryResult {
-            result, elapsed_ms, ..
+            tab,
+            result,
+            elapsed_ms,
         } => {
-            bridge.set_query_running(cx.backend.any_running());
             let (status, info) = match result.rows_affected {
                 Some(n) if result.columns.is_empty() => (
                     format!("{n} rows affected in {elapsed_ms}ms"),
@@ -223,20 +238,34 @@ pub(crate) fn apply(window: &MainWindow, cx: &Arc<UiCtx>, event: AppEvent) {
                     )
                 }
             };
-            bridge.set_status(status.into());
-            cx.grid.lock().set_result(&bridge, result, info);
-            refresh_history(window, cx);
+            // Stash first — `show_tab_result` reads the slot back.
+            if stash_result(cx, tab, TabResult::Rows(result, info)) {
+                bridge.set_query_running(cx.backend.any_running());
+                if tab == active_tab(cx) {
+                    bridge.set_status(status.into());
+                    show_tab_result(&bridge, cx, tab);
+                }
+                refresh_history(window, cx);
+            }
         }
-        AppEvent::QueryError { message, .. } => {
-            bridge.set_query_running(cx.backend.any_running());
-            bridge.set_status(message.clone().into());
-            cx.grid.lock().clear(&bridge, &format!("Error: {message}"));
-            refresh_history(window, cx);
+        AppEvent::QueryError { tab, message } => {
+            if stash_result(cx, tab, TabResult::Failed(message.clone())) {
+                bridge.set_query_running(cx.backend.any_running());
+                if tab == active_tab(cx) {
+                    bridge.set_status(message.into());
+                    show_tab_result(&bridge, cx, tab);
+                }
+                refresh_history(window, cx);
+            }
         }
-        AppEvent::QueryCancelled { .. } => {
-            bridge.set_query_running(cx.backend.any_running());
-            bridge.set_status("Cancelled".into());
-            cx.grid.lock().clear(&bridge, "Query cancelled");
+        AppEvent::QueryCancelled { tab } => {
+            if stash_result(cx, tab, TabResult::Cancelled) {
+                bridge.set_query_running(cx.backend.any_running());
+                if tab == active_tab(cx) {
+                    bridge.set_status("Cancelled".into());
+                    show_tab_result(&bridge, cx, tab);
+                }
+            }
         }
 
         AppEvent::HistoryLoaded(items) => {
@@ -262,15 +291,63 @@ pub(crate) fn apply(window: &MainWindow, cx: &Arc<UiCtx>, event: AppEvent) {
             {
                 let mut editor = cx.editor.lock();
                 editor.open_sql_tab(label, sql.clone(), conn_id, database);
-                push_tabs(&bridge, &editor);
-                let jump = editor.cursor_jump(sql.len());
-                bridge.set_editor_text(sql.clone().into());
-                bridge.set_set_cursor(jump);
+                activate_tab(&bridge, cx, &mut editor, sql.len());
             }
-            bridge.set_line_count(line_count(&sql) as i32);
-            bridge.set_highlight_spans(spans_model(&sql));
         }
     }
+}
+
+/// Id of the tab the user is looking at.
+fn active_tab(cx: &UiCtx) -> i32 {
+    cx.editor.lock().active_tab().id
+}
+
+/// Stash `slot` under `tab` — returns false (and drops the event's UI
+/// effects) when the tab is already closed, so late results can't leak
+/// slots for dead tabs.
+fn stash_result(cx: &UiCtx, tab: i32, slot: TabResult) -> bool {
+    if !cx.editor.lock().tabs.iter().any(|t| t.id == tab) {
+        return false;
+    }
+    cx.results.lock().insert(tab, slot);
+    true
+}
+
+/// Load `tab`'s result slot into the visible grid — called after every
+/// tab activation and for the active tab's own terminal events. An empty
+/// slot means "never run here": cleared grid, no footer text.
+fn show_tab_result(bridge: &Bridge, cx: &UiCtx, tab: i32) {
+    match cx.results.lock().get(&tab) {
+        Some(TabResult::Running) => cx.grid.lock().clear(bridge, "Running…"),
+        Some(TabResult::Failed(m)) => cx.grid.lock().clear(bridge, &format!("Error: {m}")),
+        Some(TabResult::Cancelled) => cx.grid.lock().clear(bridge, "Query cancelled"),
+        // TabResult isn't Clone — rebuild Rows from a reference.
+        Some(TabResult::Rows(result, info)) => {
+            cx.grid
+                .lock()
+                .set_result(bridge, result.clone(), info.clone())
+        }
+        None => cx.grid.lock().clear(bridge, ""),
+    }
+}
+
+/// Common tail of every tab activation (new/switch/close/open-sql): refresh
+/// the strip, load the incoming tab's text + caret, and restore its stashed
+/// result into the grid. `cursor` is the byte offset the caret jumps to.
+pub(crate) fn activate_tab(
+    bridge: &Bridge,
+    cx: &Arc<UiCtx>,
+    editor: &mut EditorState,
+    cursor: usize,
+) {
+    push_tabs(bridge, editor);
+    let jump = editor.cursor_jump(cursor);
+    let text = editor.active_tab().text.clone();
+    bridge.set_editor_text(text.clone().into());
+    bridge.set_line_count(line_count(&text) as i32);
+    bridge.set_highlight_spans(spans_model(&text));
+    bridge.set_set_cursor(jump);
+    show_tab_result(bridge, cx, editor.active_tab().id);
 }
 
 /// Auto-refresh (Tasks 6.1/6.2): after a query completes, its history row
@@ -366,35 +443,22 @@ pub(crate) fn run_command(window: &MainWindow, cx: &Arc<UiCtx>, cmd: Command) {
             let caret = editor.cursor;
             editor.stash(bridge.get_editor_text().to_string(), caret);
             editor.new_tab();
-            push_tabs(&bridge, &editor);
-            let jump = editor.cursor_jump(0);
-            bridge.set_editor_text("".into());
-            bridge.set_line_count(1);
-            bridge.set_highlight_spans(ModelRc::new(VecModel::<HighlightSpan>::from(Vec::new())));
-            bridge.set_set_cursor(jump);
+            activate_tab(&bridge, cx, &mut editor, 0);
         }
         Command::CloseTab => {
             let mut editor = cx.editor.lock();
             let id = editor.active_tab().id;
-            if let Some((text, cursor)) = editor.close(id, bridge.get_editor_text().to_string()) {
-                push_tabs(&bridge, &editor);
-                let jump = editor.cursor_jump(cursor);
-                bridge.set_editor_text(text.clone().into());
-                bridge.set_line_count(line_count(&text) as i32);
-                bridge.set_highlight_spans(spans_model(&text));
-                bridge.set_set_cursor(jump);
+            if let Some((_text, cursor)) = editor.close(id, bridge.get_editor_text().to_string()) {
+                cx.results.lock().remove(&id);
+                activate_tab(&bridge, cx, &mut editor, cursor);
             }
         }
         Command::NextTab => {
             let mut editor = cx.editor.lock();
-            if let Some((_id, text, cursor)) = editor.next_tab(bridge.get_editor_text().to_string())
+            if let Some((_id, _text, cursor)) =
+                editor.next_tab(bridge.get_editor_text().to_string())
             {
-                push_tabs(&bridge, &editor);
-                let jump = editor.cursor_jump(cursor);
-                bridge.set_editor_text(text.clone().into());
-                bridge.set_line_count(line_count(&text) as i32);
-                bridge.set_highlight_spans(spans_model(&text));
-                bridge.set_set_cursor(jump);
+                activate_tab(&bridge, cx, &mut editor, cursor);
             }
         }
         Command::Search => {

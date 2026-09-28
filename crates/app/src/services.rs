@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use datara_config::{AppConfig, AppPaths};
-use datara_database::DatabaseService;
+use datara_database::{DatabaseService, SecretSource};
 use datara_domain::{
     AuthenticationMode, ConnectionId, ConnectionProfile, Credentials, DomainError, EncryptionMode,
     Result as DomainResult, SecretReference, TableKind,
@@ -39,7 +39,8 @@ pub fn spawn_runtime() -> DomainResult<Runtime> {
 /// in [`AppServices`] on the UI side).
 pub struct Backend {
     pub storage: Arc<Storage>,
-    pub secrets: Arc<SecretStore>,
+    /// Secret source behind the trait so tests can substitute a stub.
+    pub secrets: Arc<dyn SecretSource>,
     pub service: Arc<DatabaseService<MssqlDriver>>,
     /// Last connection that produced schema data — the fallback target for
     /// editor tabs that weren't opened from a tree node (Task 4.2).
@@ -76,7 +77,7 @@ impl AppServices {
         let paths = AppPaths::new()?;
         let config = AppConfig::load(&paths)?;
         let storage = Arc::new(runtime.block_on(Storage::open(&paths.app_db()))?);
-        let secrets = Arc::new(runtime.block_on(SecretStore::connect())?);
+        let secrets: Arc<dyn SecretSource> = Arc::new(runtime.block_on(SecretStore::connect())?);
         let service = Arc::new(DatabaseService::<MssqlDriver>::new(
             Arc::clone(&storage),
             Arc::clone(&secrets),
@@ -266,8 +267,8 @@ impl Backend {
     }
 
     /// `Command::ExecuteQuery`: run `sql` for editor `tab_id` and report the
-    /// outcome back through the status/results area. Phase 5 swaps the
-    /// row-count status for the real grid.
+    /// outcome back as `AppEvent`s keyed by that tab (the UI stashes them
+    /// per tab — see `UiCtx::results`).
     ///
     /// One query per tab at a time: a second Execute on a running tab is
     /// rejected. The handle is awaited under the configured timeout; on
@@ -502,6 +503,48 @@ impl Backend {
 }
 
 #[cfg(test)]
+impl Backend {
+    /// Stub-secrets backend for headless UI tests (no D-Bus / keyring).
+    /// `Storage::open` creates `dir/app.db` — `dir` is a temp dir.
+    pub(crate) async fn for_test(dir: &std::path::Path) -> Arc<Self> {
+        struct TestSecrets;
+
+        #[async_trait::async_trait]
+        impl SecretSource for TestSecrets {
+            async fn save(
+                &self,
+                _: &SecretReference,
+                _: &str,
+                _: &SecretString,
+            ) -> DomainResult<()> {
+                Ok(())
+            }
+            async fn load(&self, _: &SecretReference) -> DomainResult<SecretString> {
+                Ok(SecretString::from("hunter2"))
+            }
+            async fn delete(&self, _: &SecretReference) -> DomainResult<()> {
+                Ok(())
+            }
+        }
+
+        let storage = Arc::new(
+            Storage::open(&dir.join("app.db"))
+                .await
+                .expect("test storage"),
+        );
+        let secrets: Arc<dyn SecretSource> = Arc::new(TestSecrets);
+        Arc::new(Self {
+            storage: Arc::clone(&storage),
+            secrets: Arc::clone(&secrets),
+            service: Arc::new(DatabaseService::<MssqlDriver>::new(storage, secrets)),
+            last_conn_id: std::sync::atomic::AtomicI64::new(-1),
+            running: parking_lot::Mutex::new(HashMap::new()),
+            query_timeout: Duration::from_secs(30),
+        })
+    }
+}
+
+#[cfg(test)]
 mod tests {
     //! End-to-end smoke for the save flow: profile row + keyring item must
     //! persist together. Needs a session Secret Service, so it's ignored by
@@ -518,6 +561,7 @@ mod tests {
         UiHandle::detached(std::sync::Arc::new(UiCtx {
             grid: Mutex::new(crate::grid::GridState::default()),
             tree: Mutex::new(crate::schema_tree::SchemaTree::default()),
+            results: Mutex::new(Default::default()),
             editor: Mutex::new(crate::editor_ui::EditorState::default()),
             backend: Arc::clone(&svc.backend),
             handle: svc.runtime.handle().clone(),

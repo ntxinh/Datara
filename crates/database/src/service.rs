@@ -34,15 +34,38 @@ pub type QueryHandle = tokio::task::JoinHandle<Result<QueryResult>>;
 /// [`datara_secrets::SecretStore`]; tests substitute a stub.
 #[async_trait]
 pub trait SecretSource: Send + Sync {
+    /// Store `secret` under `reference` with a human-readable `label`,
+    /// replacing any existing item.
+    async fn save(
+        &self,
+        reference: &datara_domain::SecretReference,
+        label: &str,
+        secret: &SecretString,
+    ) -> Result<()>;
     /// Load the secret stored for `reference`.
     async fn load(&self, reference: &datara_domain::SecretReference) -> Result<SecretString>;
+    /// Remove the secret stored for `reference`.
+    async fn delete(&self, reference: &datara_domain::SecretReference) -> Result<()>;
 }
 
 #[async_trait]
 impl SecretSource for datara_secrets::SecretStore {
+    // Inherent methods win over the trait — qualify each to be explicit.
+    async fn save(
+        &self,
+        reference: &datara_domain::SecretReference,
+        label: &str,
+        secret: &SecretString,
+    ) -> Result<()> {
+        datara_secrets::SecretStore::save(self, reference, label, secret).await
+    }
+
     async fn load(&self, reference: &datara_domain::SecretReference) -> Result<SecretString> {
-        // Inherent method wins over this trait — qualify to be explicit.
         datara_secrets::SecretStore::load(self, reference).await
+    }
+
+    async fn delete(&self, reference: &datara_domain::SecretReference) -> Result<()> {
+        datara_secrets::SecretStore::delete(self, reference).await
     }
 }
 
@@ -58,7 +81,7 @@ pub struct DatabaseService<D: DatabaseDriver> {
 impl<D: DatabaseDriver + Default> DatabaseService<D> {
     /// Create the service. `secrets` is the secret-source used to resolve
     /// each profile's `secret_reference` at connect time.
-    pub fn new<S: SecretSource + 'static>(storage: Arc<Storage>, secrets: Arc<S>) -> Self {
+    pub fn new(storage: Arc<Storage>, secrets: Arc<dyn SecretSource>) -> Self {
         Self {
             storage,
             secrets,
@@ -208,8 +231,21 @@ mod tests {
 
     #[async_trait]
     impl SecretSource for StubSecrets {
+        async fn save(
+            &self,
+            _reference: &SecretReference,
+            _label: &str,
+            _secret: &SecretString,
+        ) -> Result<()> {
+            Ok(())
+        }
+
         async fn load(&self, _reference: &SecretReference) -> Result<SecretString> {
             Ok(SecretString::from("hunter2"))
+        }
+
+        async fn delete(&self, _reference: &SecretReference) -> Result<()> {
+            Ok(())
         }
     }
 
