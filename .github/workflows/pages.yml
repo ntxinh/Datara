@@ -1,0 +1,41 @@
+name: Deploy landing page
+
+on:
+  push:
+    branches: [main]
+    paths: ['landing/**', '.github/workflows/pages.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: landing/package-lock.json
+
+      - name: Build
+        working-directory: landing
+        run: npm ci && npm run build
+
+      - name: Push to gh-pages
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          cd landing/dist
+          git init -b gh-pages
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          git add -A
+          git commit -m "deploy: landing page (${{ github.sha }})"
+          git push -f origin gh-pages

@@ -2,6 +2,10 @@
 /.superpowers
 /.sysdeps
 
+# Landing page
+landing/node_modules
+landing/dist
+
 # Packaging artifacts
 /packaging/rpm/_build
 /packaging/flatpak/build
